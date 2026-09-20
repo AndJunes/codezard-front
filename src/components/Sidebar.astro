@@ -25,7 +25,10 @@ const chats: { title: string; active: boolean }[] = []
 <aside class="sidebar" id="sidebar">
   <div class="top">
     <div class="brand">
-      <span class="mark" aria-hidden="true">◈</span>
+      <!-- `alt=""` because the name is right next to it: a screen reader announcing
+           "CodeZard CodeZard" is worse than it announcing nothing here. It is also the
+           whole brand when the sidebar is collapsed to the rail. -->
+      <img class="mark" src="/mascota.svg" alt="" width="26" height="26" />
       <span class="brand__name">CodeZard</span>
     </div>
     <button class="toggle" id="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true">
@@ -119,7 +122,7 @@ const chats: { title: string; active: boolean }[] = []
 
   .top { display: flex; align-items: center; gap: 0.5rem; padding: 0 0.25rem; }
   .brand { display: flex; align-items: center; gap: 0.55rem; font-weight: 700; font-size: 1.02rem; min-width: 0; }
-  .mark { color: var(--accent); font-size: 1.25rem; line-height: 1; }
+  .mark { width: 26px; height: 26px; flex: none; display: block; }
   .brand__name { overflow: hidden; white-space: nowrap; }
 
   .toggle, .ghost {

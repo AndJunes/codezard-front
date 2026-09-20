@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="CodeZard">
+  <title>CodeZard</title>
+  <defs>
+    <clipPath id="cz-cara">
+      <path d="M4 61C4 43 24 30 50 30s46 13 46 31c0 19-20 31-46 31S4 80 4 61Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Crest, behind the head: one tall spike in the middle, two flanking it, and two that
+       poke out past the sides. The outer pair is what keeps the silhouette reading as a
+       lizard once the face is too small to have a face. -->
+  <g fill="#14a3a5">
+    <path d="M50 8 62 35H38Z"/>
+    <path d="M29 14 46 37 20 35Z"/>
+    <path d="M71 14 80 35 54 37Z"/>
+    <path d="M9 27 31 45 11 48Z"/>
+    <path d="M91 27 89 48 69 45Z"/>
+  </g>
+
+  <!-- Half again as wide as it is tall, which is the proportion that separates this from a
+       frog. -->
+  <path d="M4 61C4 43 24 30 50 30s46 13 46 31c0 19-20 31-46 31S4 80 4 61Z" fill="#6fd18f"/>
+
+  <g clip-path="url(#cz-cara)">
+    <ellipse cx="50" cy="101" rx="38" ry="24" fill="#c9ee93"/>
+    <g fill="none" stroke="#14a3a5" stroke-width="2.4" stroke-linecap="round">
+      <path d="M9 55c3 5 6 10 8 16"/>
+      <path d="M4 63c4 4 7 9 9 14"/>
+      <path d="M91 55c-3 5-6 10-8 16"/>
+      <path d="M96 63c-4 4-7 9-9 14"/>
+    </g>
+  </g>
+
+  <!-- Eyes sit high and inside the outline; the pupils look slightly outward, which is
+       where the character in the drawing comes from. -->
+  <g fill="#fbf7ec">
+    <circle cx="28" cy="46" r="13.2"/>
+    <circle cx="72" cy="46" r="13.2"/>
+  </g>
+  <g fill="#0a0a0a">
+    <circle cx="25.6" cy="47" r="6.4"/>
+    <circle cx="74.4" cy="47" r="6.4"/>
+  </g>
+
+  <g fill="#0d7a4e">
+    <ellipse cx="45.4" cy="62" rx="2" ry="2.6"/>
+    <ellipse cx="54.6" cy="62" rx="2" ry="2.6"/>
+  </g>
+  <path d="M16 67c4 9 17 13 34 13s30-4 34-13" fill="none" stroke="#0d7a4e"
+        stroke-width="4.4" stroke-linecap="round"/>
+</svg>
