@@ -2,6 +2,7 @@
   import { mayGenerate, next, type State } from "../../lib/flow/machine"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
+  import Files from "./Files.svelte"
   import type { Answer, Interpretation, Plan, Questionnaire } from "../../lib/plan/schema"
 
   // The only interactive piece in the app. Everything else is HTML, which is the reason for
@@ -110,6 +111,12 @@
   }
 </script>
 
+<div class="panes">
+<section class="chat">
+<header class="chat__head">
+  <h1>Construir un proyecto</h1>
+  <p class="dim">Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
+</header>
 <div class="run">
   {#if state === "IDEA"}
     <div class="card">
@@ -201,21 +208,35 @@
         <span class="badge badge--{badge.tone}">{badge.label}</span>
       </div>
       <p class="dim">{badge.detail}</p>
-      <p class="dim">{project.totals.files} archivos · {project.totals.lines} líneas</p>
-      {#if project.download_url}
-        <a class="btn btn--primary" href={project.download_url} download>Descargar el ZIP</a>
-      {:else}
-        <p class="dim">No hay descarga: el artefacto no pasó el control de integridad.</p>
-      {/if}
+      <p class="dim">Los {project.totals.files} archivos están a la derecha. El ZIP se baja desde ahí.</p>
       <button class="btn" onclick={restart}>Empezar otro</button>
     </div>
   {/if}
 
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 </div>
+</section>
+
+<Files {project} {busy} />
+</div>
 
 <style>
-  .run { display: flex; flex-direction: column; gap: 1rem; max-width: 760px; }
+  /* Three panes across the window: the sidebar is a sibling in index.astro, the chat is a
+     fixed column, and the project panel takes whatever is left — code is what wants the
+     room. The chat scrolls on its own so a long conversation never pushes the file tree
+     off the screen. */
+  .panes { display: flex; flex: 1; min-height: 0; min-width: 0; }
+  .chat { flex: 0 0 clamp(360px, 34vw, 480px); min-width: 0; overflow-y: auto; padding: 1.6rem clamp(1rem, 2.2vw, 1.8rem); }
+  .chat__head { margin-bottom: 1.2rem; }
+  .chat__head h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+  .run { display: flex; flex-direction: column; gap: 1rem; }
+
+  /* Below this the two panes stack, and the chat stops being a scroll container of its own
+     — nested scrolling on a phone means one of the two always traps the gesture. */
+  @media (max-width: 1100px) {
+    .panes { flex-direction: column; }
+    .chat { flex: 0 0 auto; overflow: visible; }
+  }
   h2 { margin: 0 0 0.35rem; font-size: 1.35rem; }
   h3 { margin: 0 0 0.35rem; font-size: 1.05rem; }
   h4 { margin: 1rem 0 0.3rem; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }

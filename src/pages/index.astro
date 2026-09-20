@@ -37,11 +37,9 @@ export const prerender = false
     <div class="app">
       <Sidebar />
       <main>
-        <header>
-          <h1>Construir un proyecto</h1>
-          <p>Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
-        </header>
-        <!-- The only hydrated component on the page. -->
+        <!-- The only hydrated component on the page. It owns both the chat and the project
+             panel because they read the same generated project: splitting them into two
+             islands would mean two copies of that state and something to sync them. -->
         <Run client:load />
       </main>
     </div>
@@ -49,10 +47,10 @@ export const prerender = false
 </html>
 
 <style>
-  .app { display: flex; min-height: 100vh; }
-  main { flex: 1; min-width: 0; padding: 2rem clamp(1rem, 4vw, 3rem); }
+  /* Fixed to the viewport, not `min-height`: the chat and the file tree each scroll
+     inside their own pane, which only works if the shell itself does not grow. */
+  .app { display: flex; height: 100vh; overflow: hidden; }
+  main { flex: 1; min-width: 0; display: flex; }
+  @media (max-width: 1100px) { .app { height: auto; min-height: 100vh; overflow: visible; } }
   @media (max-width: 860px) { main { margin-left: 68px; } }
-  header { margin-bottom: 1.5rem; }
-  h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
-  header p { margin: 0; color: var(--text-dim); }
 </style>
