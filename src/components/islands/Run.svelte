@@ -305,15 +305,27 @@
   }
 </script>
 
+<!-- Defined once and rendered in both places, so the header and the rail can never end up
+     showing two different marks for the same thing. -->
+{#snippet chatIcon()}
+  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M21 13.5a3 3 0 0 1-3 3H9l-5 3.5V6a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3z" />
+    <circle cx="8.6" cy="9.8" r="0.9" />
+    <circle cx="12.5" cy="9.8" r="0.9" />
+    <circle cx="16.4" cy="9.8" r="0.9" />
+  </svg>
+{/snippet}
+
 <div class="panes" class:panes--dragging={dragging} bind:this={panes}>
   <button class="rail" onclick={() => (chatOpen = true)} title="Mostrar la conversación">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
-    <span class="rail__label">Construir un proyecto</span>
+    {@render chatIcon()}
+    <span class="sr-only">Mostrar la conversación</span>
   </button>
 
   <section class="chat">
     <header class="chat__head">
       <div class="chat__title">
+        {@render chatIcon()}
         <h1>Construir un proyecto</h1>
         <button class="hide" onclick={() => (chatOpen = false)} title="Esconder la conversación">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
@@ -450,8 +462,13 @@
     min-height: 0;
   }
   .chat__head { padding: 1.4rem clamp(1rem, 2.2vw, 1.6rem) 0.8rem; }
-  .chat__title { display: flex; align-items: flex-start; gap: 0.6rem; }
-  .chat__head h1 { margin: 0 0 0.2rem; font-size: 1.3rem; flex: 1; min-width: 0; }
+  .chat__title { display: flex; align-items: center; gap: 0.55rem; }
+  .chat__head h1 { margin: 0; font-size: 1.3rem; flex: 1; min-width: 0; }
+
+  .ico { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .chat__title .ico { color: var(--accent); }
+  .chat__title .ico circle { fill: currentColor; stroke: none; }
+  .rail .ico circle { fill: currentColor; stroke: none; }
 
   .hide { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--text-dim); }
   .hide:hover { background: var(--surface-2); color: var(--text); }
@@ -466,18 +483,19 @@
   :global(:root[data-chat="closed"]) .chat,
   :global(:root[data-chat="closed"]) .grip { display: none; }
 
+  /* Put away, the column leaves the same mark that titles it, and nothing else. The name
+     still reaches a screen reader and the pointer through `title`; on screen a 40px strip
+     of sideways text was just hard to read. */
   .rail {
     /* No `display` here on purpose: it is set by the two state rules above, and repeating
        it below them would win on source order and show the rail while the chat is open. */
-    flex: 0 0 40px;
-    flex-direction: column; align-items: center; gap: 0.8rem;
-    padding: 1rem 0;
+    flex: 0 0 44px;
+    flex-direction: column; align-items: center;
+    padding: 0.9rem 0;
     border: 0; border-right: 1px solid var(--line);
     background: none; color: var(--text-dim);
   }
-  .rail:hover { background: var(--surface); color: var(--text); }
-  .rail svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-  .rail__label { writing-mode: vertical-rl; font-size: 0.8rem; letter-spacing: 0.02em; white-space: nowrap; }
+  .rail:hover { background: var(--surface); color: var(--accent); }
 
   .grip {
     flex: 0 0 5px;
@@ -543,9 +561,7 @@
        it is the one of the two that still means something on a phone. */
     .chat { flex: 0 0 auto; }
     .grip { display: none; }
-    .rail { flex: 0 0 auto; flex-direction: row; justify-content: center; padding: 0.6rem; border-right: 0; border-bottom: 1px solid var(--line); }
-    .rail svg { transform: rotate(90deg); }
-    .rail__label { writing-mode: horizontal-tb; }
+    .rail { flex: 0 0 auto; flex-direction: row; justify-content: center; padding: 0.55rem; border-right: 0; border-bottom: 1px solid var(--line); }
     .transcript { overflow: visible; }
     /* The page scrolls instead of the transcript here, so the composer would drift off the
        bottom as the conversation grows — and the questionnaire, which hangs off it, with it.
