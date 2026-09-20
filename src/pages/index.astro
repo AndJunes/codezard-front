@@ -1,0 +1,39 @@
+---
+import Sidebar from "../components/Sidebar.astro"
+import Run from "../components/islands/Run.svelte"
+import "../styles/tokens.css"
+
+export const prerender = false
+---
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeZard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Gantari:wght@400;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="app">
+      <Sidebar />
+      <main>
+        <header>
+          <h1>Construir un proyecto</h1>
+          <p>Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
+        </header>
+        <!-- The only hydrated component on the page. -->
+        <Run client:load />
+      </main>
+    </div>
+  </body>
+</html>
+
+<style>
+  .app { display: flex; min-height: 100vh; }
+  main { flex: 1; padding: 2rem clamp(1rem, 4vw, 3rem); }
+  header { margin-bottom: 1.5rem; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+  header p { margin: 0; color: var(--text-dim); }
+</style>

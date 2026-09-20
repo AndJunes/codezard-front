@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.astro/
+
+# Secrets. Never. Only the .example template is versioned.
+.env
+.env.*
+!.env.example
+
+.DS_Store
