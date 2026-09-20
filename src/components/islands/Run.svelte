@@ -113,6 +113,21 @@
     BACKEND_GENERATION: "El agente está escribiendo el proyecto…",
     ZIP_READY: "Listo. Empezá otro para volver a arrancar.",
   }
+  /**
+   * Which of the three stages the run is in.
+   *
+   * The header used to explain the flow in a sentence — "contás la idea, el PM la convierte
+   * en un plan, vos lo aprobás" — which says what happens but never where you are. The same
+   * three stages as a row says both, and it comes from the state machine rather than from a
+   * counter that could disagree with it.
+   */
+  const STAGES = [
+    { label: "Idea", states: ["IDEA", "PM_ANALYSIS", "QUESTIONNAIRE"] },
+    { label: "Plan", states: ["PLAN_REVIEW", "PLAN_REJECTED", "PM_REVISION"] },
+    { label: "Proyecto", states: ["PLAN_APPROVED", "BACKEND_GENERATION", "ZIP_READY"] },
+  ] as const
+  const stage = $derived(STAGES.findIndex((s) => (s.states as readonly string[]).includes(state)))
+
   const canType = $derived((state === "IDEA" || state === "PLAN_REVIEW") && !pending && !busy)
   const hint = $derived(
     state === "IDEA"
@@ -332,7 +347,15 @@
           <span class="sr-only">Esconder la conversación</span>
         </button>
       </div>
-      <p class="dim">Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
+
+      <ol class="stages">
+        {#each STAGES as item, i}
+          <li class:stages--done={i < stage} class:stages--now={i === stage} aria-current={i === stage ? "step" : undefined}>
+            <span class="stages__n">{i < stage ? "✓" : i + 1}</span>
+            {item.label}
+          </li>
+        {/each}
+      </ol>
     </header>
 
     <div class="transcript" bind:this={transcript}>
@@ -461,9 +484,25 @@
     flex-direction: column;
     min-height: 0;
   }
-  .chat__head { padding: 1.4rem clamp(1rem, 2.2vw, 1.6rem) 0.8rem; }
+  /* The same band as the project panel's header, for the same reason: without it the title
+     was the first line of the conversation rather than the frame around it. */
+  .chat__head {
+    padding: 1rem clamp(1rem, 2.2vw, 1.6rem) 0.75rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+  }
   .chat__title { display: flex; align-items: center; gap: 0.55rem; }
-  .chat__head h1 { margin: 0; font-size: 1.3rem; flex: 1; min-width: 0; }
+  .chat__head h1 { margin: 0; font-size: 1.22rem; flex: 1; min-width: 0; }
+
+  .stages { display: flex; align-items: center; gap: 0.55rem; list-style: none; margin: 0.7rem 0 0; padding: 0; font-size: 0.78rem; }
+  .stages li { display: flex; align-items: center; gap: 0.35rem; color: var(--text-dim); white-space: nowrap; }
+  /* The connector is drawn by the item that follows, so the last one has no dangling tail. */
+  .stages li + li::before { content: ""; width: 1.1rem; height: 1px; background: var(--line); margin-right: 0.2rem; }
+  .stages__n { display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; border: 1px solid var(--line); font-size: 0.66rem; font-weight: 600; }
+  .stages--done { color: var(--text-dim); }
+  .stages--done .stages__n { border-color: var(--accent); color: var(--accent); }
+  .stages--now { color: var(--text); font-weight: 600; }
+  .stages--now .stages__n { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
   .ico { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   .chat__title .ico { color: var(--accent); }

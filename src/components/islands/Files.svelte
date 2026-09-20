@@ -131,21 +131,39 @@
   {#if project}
     {@const badge = badgeForProject(project.status)}
     <header class="head">
+      <p class="kicker">Proyecto generado</p>
+
+      <!-- The name is the biggest thing here and the download is beside it, not above it.
+           A full-width accent button was the loudest object on the screen, which made the
+           first question this panel answered "where do I click" instead of "what is this". -->
       <div class="title">
-        <strong>{project.name}</strong>
-        <span class="badge badge--{badge.tone}">{badge.label}</span>
+        <h2>{project.name}</h2>
+        {#if project.download_url}
+          <a class="btn btn--primary dl" href={project.download_url} download>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 11 5 5 5-5" /><path d="M5 21h14" /></svg>
+            <span>Descargar ZIP</span>
+          </a>
+        {/if}
       </div>
-      <p class="meta">
-        {project.totals.files} archivos · {project.totals.directories} carpetas · {project.totals.lines} líneas
+
+      <!-- The badge travels with the sentence that explains it. On its own, "Pendiente de
+           QA" is a label the reader has to guess at; UX-4 asks that it carry the weight of
+           a failure, and a word with no explanation carries none. -->
+      <p class="status">
+        <span class="badge badge--{badge.tone}">{badge.label}</span>
+        <span class="status__why">{badge.detail}</span>
       </p>
-      {#if project.download_url}
-        <a class="btn btn--primary dl" href={project.download_url} download>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 11 5 5 5-5" /><path d="M5 21h14" /></svg>
-          <span>Descargar ZIP{#if project.zip}&nbsp;· {kb(project.zip.bytes)}{/if}</span>
-        </a>
-      {:else}
+
+      {#if !project.download_url}
         <p class="nodl">Sin descarga: {project.integrity.reason || "no pasó el control de integridad"}.</p>
       {/if}
+
+      <dl class="stats">
+        <div><dt>Archivos</dt><dd>{project.totals.files}</dd></div>
+        <div><dt>Carpetas</dt><dd>{project.totals.directories}</dd></div>
+        <div><dt>Líneas</dt><dd>{project.totals.lines}</dd></div>
+        {#if project.zip}<div><dt>ZIP</dt><dd>{kb(project.zip.bytes)}</dd></div>{/if}
+      </dl>
     </header>
 
     <div class="split">
@@ -189,14 +207,20 @@
       </div>
     </div>
   {:else}
+    <!-- The header stays even with nothing in it, so the panel is identifiable before it
+         has anything to show rather than being an unexplained empty half of the window. -->
+    <header class="head head--empty">
+      <p class="kicker">Proyecto</p>
+      <h2 class="waiting">{busy ? "Generándose…" : "Todavía no hay ninguno"}</h2>
+    </header>
     <div class="blank">
       <svg viewBox="0 0 24 24" aria-hidden="true" class="blank__ico"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
       {#if busy}
-        <p class="pulse">Generando…</p>
-        <p class="meta">La estructura aparece cuando el agente termina de escribirla.</p>
+        <p class="pulse">El agente está escribiendo los archivos</p>
+        <p class="meta">La estructura aparece cuando termina.</p>
       {:else}
-        <p>Acá va a aparecer el proyecto</p>
-        <p class="meta">Cada archivo que genere el agente, con su contenido, antes de descargar nada.</p>
+        <p>Acá vas a ver cada archivo antes de descargar nada</p>
+        <p class="meta">El árbol completo, con el contenido de cada uno.</p>
       {/if}
     </div>
   {/if}
@@ -212,13 +236,36 @@
     background: var(--bg);
   }
 
-  .head { padding: 1rem 1.1rem; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 0.45rem; }
-  .title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-  .title strong { font-size: 1rem; }
-  .meta { margin: 0; font-size: 0.8rem; color: var(--text-dim); }
-  .dl { display: inline-flex; align-items: center; gap: 0.45rem; align-self: flex-start; text-decoration: none; }
-  .dl svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  /* A band, not more page. The panel used to be one flat sheet from the title down to the
+     code, so the header read as the first paragraph of the content instead of as its frame. */
+  .head {
+    padding: 0.9rem 1.15rem 1rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 0.55rem;
+  }
+  .head--empty { gap: 0.15rem; }
+
+  /* Four steps down in size from here to the stats, so the eye is told what to read first
+     instead of being handed four things of equal weight. */
+  .kicker { margin: 0; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+  .title { display: flex; align-items: center; gap: 0.75rem; }
+  .title h2 { margin: 0; font-size: 1.22rem; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .waiting { margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--text-dim); }
+
+  .status { margin: 0; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .status__why { font-size: 0.82rem; color: var(--text-dim); line-height: 1.45; flex: 1 1 14rem; }
+
+  .dl { flex: none; display: inline-flex; align-items: center; gap: 0.45rem; text-decoration: none; padding: 0.45rem 0.85rem; font-size: 0.88rem; }
+  .dl svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
   .nodl { margin: 0; font-size: 0.82rem; color: var(--pending); }
+
+  .stats { display: flex; gap: 1.6rem; margin: 0.15rem 0 0; }
+  .stats div { display: flex; flex-direction: column-reverse; }
+  .stats dt { font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-dim); }
+  .stats dd { margin: 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .meta { margin: 0; font-size: 0.8rem; color: var(--text-dim); }
 
   /* The tree keeps its width; the viewer takes the rest and is the only part that can be
      squeezed, because code is what benefits from the room. */
