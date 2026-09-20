@@ -17,6 +17,12 @@
   --good: var(--accent);
   --neutral: var(--text-dim);
 
+  /* The resting thumb is not neutral grey: a little of the accent mixed into the line
+     colour is what keeps it looking like part of this product rather than like the
+     operating system's. */
+  --scroll-thumb: color-mix(in oklab, var(--accent) 12%, #2b2b32);
+  --scroll-thumb-hover: color-mix(in oklab, var(--accent) 55%, #2b2b32);
+
   --radius: 14px;
   --font: Gantari, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
@@ -61,3 +67,39 @@ button { font: inherit; cursor: pointer; }
   .pulse { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.45; } }
 }
+
+
+/* Scrollbars.
+ *
+ * Global rather than per-component: there are six scrolling areas across the chat, the file
+ * tree, the code viewer, the README and the sidebar, and Svelte's scoped styles cannot reach
+ * a pseudo-element on an arbitrary descendant anyway. One definition, everywhere.
+ *
+ * On macOS these are hidden until you scroll unless the system is set to show them always —
+ * which is exactly when the default ones looked worst, a bright grey bar down the seam
+ * between two panes.
+ */
+* {
+  /* Firefox. It takes no pseudo-elements, so the inset trick below does not apply and the
+     track is simply transparent. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+/* The arrows at the ends: nothing else in this interface has them. */
+::-webkit-scrollbar-button { display: none; }
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 999px;
+  /* A transparent border plus `content-box` leaves a 5px bar inside an 11px gutter: slim to
+     look at, still wide enough to grab. Painting the full 11px would put a slab against the
+     code it sits beside. */
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); background-clip: content-box; }
+::-webkit-scrollbar-thumb:active { background: var(--accent); background-clip: content-box; }
