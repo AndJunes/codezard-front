@@ -2,25 +2,70 @@
   import { mayGenerate, next, type State } from "../../lib/flow/machine"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
-  import Files from "./Files.svelte"
+  import { messageId, type Message } from "../../lib/chat/messages"
   import type { Answer, Interpretation, Plan, Questionnaire } from "../../lib/plan/schema"
+  import Files from "./Files.svelte"
+  import QuestionnairePopup from "./Questionnaire.svelte"
+  import PlanCard from "./PlanCard.svelte"
+  import Steps from "./Steps.svelte"
 
   // The only interactive piece in the app. Everything else is HTML, which is the reason for
   // choosing Astro: a page that mostly sits still should not ship a framework to sit still.
 
   let state = $state<State>("IDEA")
-  let idea = $state("")
-  let interpretation = $state<Interpretation | null>(null)
-  let questionnaire = $state<Questionnaire | null>(null)
-  let answers = $state<Record<string, string>>({})
-  let plans = $state<Plan[]>([])
-  let feedback = $state("")
-  let steps = $state<string[]>([])
-  let project = $state<Project | null>(null)
-  let error = $state("")
+  let messages = $state<Message[]>([])
+  let pending = $state<Questionnaire | null>(null)
+  let draft = $state("")
   let busy = $state(false)
+  let project = $state<Project | null>(null)
 
-  const plan = $derived(plans.at(-1) ?? null)
+  let transcript: HTMLDivElement | undefined
+  let composer: HTMLTextAreaElement | undefined
+
+  /**
+   * The plan is read back out of the transcript instead of being kept beside it.
+   *
+   * Two copies would have to be mutated together — approving one and leaving the rendered
+   * one at "draft" is exactly the kind of drift that shows up as a button that does nothing.
+   * Here the message holds the only copy, so `plan.status = "approved"` is visible wherever
+   * it is drawn.
+   */
+  const planMessages = $derived(
+    messages.filter((m): m is Extract<Message, { kind: "plan" }> => m.kind === "plan"),
+  )
+  const plan = $derived(planMessages.at(-1)?.plan ?? null)
+
+  const HINTS: Partial<Record<State, string>> = {
+    PM_ANALYSIS: "El PM está leyendo…",
+    QUESTIONNAIRE: "Respondé las preguntas de arriba",
+    PLAN_REJECTED: "El PM está revisando…",
+    PM_REVISION: "El PM está revisando…",
+    PLAN_APPROVED: "Generá el proyecto para seguir",
+    BACKEND_GENERATION: "El agente está escribiendo el proyecto…",
+    ZIP_READY: "Listo. Empezá otro para volver a arrancar.",
+  }
+  const canType = $derived((state === "IDEA" || state === "PLAN_REVIEW") && !pending && !busy)
+  const hint = $derived(
+    state === "IDEA"
+      ? "Contá qué querés construir…"
+      : state === "PLAN_REVIEW"
+        ? "Pedí cambios con tus palabras, o aceptá el plan…"
+        : (HINTS[state] ?? ""),
+  )
+
+  function say(message: Message) {
+    messages.push(message)
+  }
+
+  const agent = (text: string): Message => ({ id: messageId(), from: "agent", kind: "text", text })
+
+  // New turns scroll into view; a streaming step does not, so reading the transcript while
+  // the agent works is not a fight with the scrollbar.
+  $effect(() => {
+    void messages.length
+    void pending
+    requestAnimationFrame(() => transcript?.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" }))
+  })
 
   function go(event: Parameters<typeof next>[1]) {
     const to = next(state, event)
@@ -34,227 +79,332 @@
     return data
   }
 
-  async function describe() {
-    if (!idea.trim() || busy) return
-    busy = true; error = ""
+  function fail(error: unknown) {
+    say({ id: messageId(), from: "agent", kind: "error", text: String(error) })
+  }
+
+  function send() {
+    const text = draft.trim()
+    if (!text || !canType) return
+    draft = ""
+    say({ id: messageId(), from: "user", kind: "text", text })
+    if (state === "IDEA") void describe(text)
+    else void revise(text)
+  }
+
+  async function describe(idea: string) {
+    busy = true
     try {
       go("DESCRIBE")
-      interpretation = await post("/api/pm/analyze", { idea })
-      if (interpretation?.questionnaire) { questionnaire = interpretation.questionnaire; go("ASK") }
-      else await propose()
-    } catch (e) { error = String(e) } finally { busy = false }
+      const interpretation: Interpretation = await post("/api/pm/analyze", { idea })
+      if (interpretation.summary) say(agent(interpretation.summary))
+      if (interpretation.questionnaire) {
+        pending = interpretation.questionnaire
+        go("ASK")
+      } else {
+        await propose([])
+      }
+    } catch (e) {
+      fail(e)
+    } finally {
+      busy = false
+    }
   }
 
-  async function propose() {
-    busy = true; error = ""
+  function answered(answers: Answer[], pairs: { question: string; answer: string }[]) {
+    pending = null
+    // The questionnaire folds back into the conversation as one turn, so what was decided
+    // stays readable next to everything else instead of vanishing with the popup.
+    if (pairs.length) say({ id: messageId(), from: "user", kind: "answers", pairs })
+    else say({ id: messageId(), from: "user", kind: "text", text: "Seguí sin esas respuestas." })
+    go("DESCRIBE")
+    void propose(answers)
+  }
+
+  function dismiss() {
+    // Closing is "go on with what I gave you", not "cancel": the PM has to answer something,
+    // and it is better at saying what it still does not know than the popup is.
+    const answers: Answer[] = []
+    answered(answers, [])
+  }
+
+  async function propose(answers: Answer[]) {
+    busy = true
     try {
-      const list: Answer[] = Object.entries(answers).map(([questionId, value]) => ({ questionId, value }))
-      const result = await post("/api/pm/plan", { idea, answers: list })
+      const idea = messages.find((m) => m.from === "user" && m.kind === "text")
+      const result = await post("/api/pm/plan", {
+        idea: idea && idea.kind === "text" ? idea.text : "",
+        answers,
+      })
       if ("questions" in result) {
         // A second round is a normal outcome: the answers opened something new.
-        questionnaire = result as Questionnaire
-        state = "PM_ANALYSIS"; go("ASK")
+        pending = result as Questionnaire
+        go("ASK")
       } else {
-        plans = [...plans, result as Plan]
-        state = "PM_ANALYSIS"; go("PROPOSE")
+        say({ id: messageId(), from: "agent", kind: "plan", plan: result as Plan })
+        go("PROPOSE")
       }
-    } catch (e) { error = String(e) } finally { busy = false }
+    } catch (e) {
+      fail(e)
+    } finally {
+      busy = false
+    }
   }
 
-  async function reject() {
-    if (!plan || !feedback.trim() || busy) return
-    busy = true; error = ""
+  async function revise(feedback: string) {
+    if (!plan) return
+    busy = true
     try {
-      go("REJECT"); go("REVISE")
+      go("REJECT")
+      go("REVISE")
       const revised: Plan = await post("/api/pm/plan", { plan, feedback }, "PUT")
-      plans = [...plans, revised]
-      feedback = ""
+      say({ id: messageId(), from: "agent", kind: "plan", plan: revised })
       go("PROPOSE")
-    } catch (e) { error = String(e) } finally { busy = false }
+    } catch (e) {
+      fail(e)
+    } finally {
+      busy = false
+    }
   }
 
   function approve() {
     if (!plan) return
-    plans = [...plans.slice(0, -1), { ...plan, status: "approved" }]
+    plan.status = "approved"
     go("APPROVE")
+    say(agent("Plan aprobado. A partir de acá no se modifica: el agente lo usa como especificación."))
+  }
+
+  function askForChanges() {
+    composer?.focus()
   }
 
   async function generate() {
     if (!plan || !mayGenerate(state) || busy) return
-    busy = true; error = ""; steps = []; project = null
+    busy = true
+    project = null
+
+    say({ id: messageId(), from: "agent", kind: "steps", steps: [], running: true, ms: 0 })
+    // Read back through the proxy: mutating the object that was pushed would not be tracked.
+    const live = messages.at(-1) as Extract<Message, { kind: "steps" }>
+    const started = Date.now()
+    const ticking = setInterval(() => (live.ms = Date.now() - started), 250)
+
     try {
       go("GENERATE")
       const r = await fetch("/api/backend/generate", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plan }),
       })
       if (!r.ok || !r.body) {
         const detail = await r.json().catch(() => ({}))
         throw new Error(detail.detail ?? detail.error ?? `HTTP ${r.status}`)
       }
-      for await (const event of readEvents(r.body)) {
-        apply(event)
-      }
+      for await (const event of readEvents(r.body)) apply(event, live)
       go("DELIVER")
-    } catch (e) { error = String(e); state = "PLAN_APPROVED" } finally { busy = false }
+      if (project) say({ id: messageId(), from: "agent", kind: "project", project })
+    } catch (e) {
+      fail(e)
+      state = "PLAN_APPROVED"
+    } finally {
+      clearInterval(ticking)
+      live.ms = Date.now() - started
+      live.running = false
+      busy = false
+    }
   }
 
-  function apply(event: AgentEvent) {
-    if (event.type === "step") steps = [...steps, `${event.name} · ${event.summary}`]
-    else if (event.type === "phase") steps = [...steps, event.text]
+  function apply(event: AgentEvent, live: Extract<Message, { kind: "steps" }>) {
+    if (event.type === "step") live.steps.push(`${event.name} · ${event.summary}`)
+    else if (event.type === "phase") live.steps.push(event.text)
     if (isDone(event)) project = event.project
   }
 
   function restart() {
-    state = "IDEA"; idea = ""; interpretation = null; questionnaire = null
-    answers = {}; plans = []; feedback = ""; steps = []; project = null; error = ""
+    state = "IDEA"
+    messages = []
+    pending = null
+    draft = ""
+    project = null
+  }
+
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault()
+      send()
+    }
   }
 </script>
 
 <div class="panes">
-<section class="chat">
-<header class="chat__head">
-  <h1>Construir un proyecto</h1>
-  <p class="dim">Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
-</header>
-<div class="run">
-  {#if state === "IDEA"}
-    <div class="card">
-      <h2>¿Qué querés construir?</h2>
-      <p class="dim">Describilo con tus palabras. Si falta algo, te lo voy a preguntar antes de proponerte nada.</p>
-      <textarea bind:value={idea} rows="4" maxlength="4000" placeholder="Una API de reservas para un consultorio…"></textarea>
-      <button class="btn btn--primary" onclick={describe} disabled={busy || !idea.trim()}>Empezar</button>
-    </div>
-  {/if}
+  <section class="chat">
+    <header class="chat__head">
+      <h1>Construir un proyecto</h1>
+      <p class="dim">Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
+    </header>
 
-  {#if interpretation && state !== "IDEA"}
-    <div class="card"><h3>Lo que entendí</h3><p class="pre">{interpretation.summary}</p></div>
-  {/if}
+    <div class="transcript" bind:this={transcript}>
+      {#if !messages.length}
+        <p class="opening">
+          Describí lo que querés construir con tus palabras. Si falta algo, te lo voy a preguntar
+          antes de proponerte nada.
+        </p>
+      {/if}
 
-  {#if state === "QUESTIONNAIRE" && questionnaire}
-    <div class="card">
-      <h3>Antes de seguir</h3>
-      <p class="dim">{questionnaire.reason}</p>
-      {#each questionnaire.questions as q}
-        <label class="q">
-          <span>{q.text}</span>
-          {#if q.options}
-            <select bind:value={answers[q.id]}>
-              <option value="" disabled selected>Elegí una</option>
-              {#each q.options as o}<option>{o}</option>{/each}
-            </select>
-          {:else}
-            <input bind:value={answers[q.id]} placeholder="Tu respuesta" />
-          {/if}
-        </label>
+      {#each messages as message (message.id)}
+        {#if message.from === "user"}
+          <div class="turn turn--user">
+            <div class="bubble">
+              {#if message.kind === "text"}
+                {message.text}
+              {:else}
+                <ul class="pairs">
+                  {#each message.pairs as pair}
+                    <li><span>{pair.question}</span> <b>{pair.answer}</b></li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          <div class="turn">
+            {#if message.kind === "text"}
+              <p class="said">{message.text}</p>
+            {:else if message.kind === "plan"}
+              <PlanCard
+                plan={message.plan}
+                active={message.plan === plan && state === "PLAN_REVIEW"}
+                {busy}
+                onapprove={approve}
+                onreject={askForChanges}
+              />
+            {:else if message.kind === "steps"}
+              <Steps steps={message.steps} running={message.running} ms={message.ms} />
+            {:else if message.kind === "project"}
+              {@const badge = badgeForProject(message.project.status)}
+              <div class="done">
+                <div class="done__head">
+                  <b>{message.project.name}</b>
+                  <span class="badge badge--{badge.tone}">{badge.label}</span>
+                </div>
+                <p class="dim">{badge.detail}</p>
+                <p class="dim">Los {message.project.totals.files} archivos están a la derecha. El ZIP se baja desde ahí.</p>
+                <button class="btn" onclick={restart}>Empezar otro</button>
+              </div>
+            {:else}
+              <p class="error" role="alert">{message.text}</p>
+            {/if}
+          </div>
+        {/if}
       {/each}
-      <button class="btn btn--primary" onclick={propose} disabled={busy}>Generar el plan</button>
-    </div>
-  {/if}
 
-  {#if plan && (state === "PLAN_REVIEW" || state === "PLAN_REJECTED" || state === "PM_REVISION")}
-    <div class="card">
-      <div class="row">
-        <h3>Plan v{plan.version}</h3>
-        {#if plan.revisionOf}<span class="dim">revisión de la v{plan.revisionOf.version}</span>{/if}
+      {#if planMessages.length > 1}
+        <p class="versions">Versiones: {planMessages.map((m) => `v${m.plan.version}`).join(" → ")}</p>
+      {/if}
+
+      {#if state === "PLAN_APPROVED"}
+        <div class="turn cta">
+          <button class="btn btn--primary" onclick={generate} disabled={busy}>Generar el proyecto</button>
+        </div>
+      {/if}
+    </div>
+
+    <!-- The popup hangs off this wrapper, so it sits over the conversation and directly on
+         top of the box it is standing in for. -->
+    <div class="foot">
+      {#if pending}
+        <QuestionnairePopup questionnaire={pending} onfinish={answered} ondismiss={dismiss} />
+      {/if}
+
+      <div class="composer" class:composer--off={!canType}>
+        <textarea
+          bind:this={composer}
+          bind:value={draft}
+          rows="1"
+          maxlength="4000"
+          placeholder={hint}
+          disabled={!canType}
+          {onkeydown}
+        ></textarea>
+        <button class="send" onclick={send} disabled={!canType || !draft.trim()} title="Enviar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5" /><path d="m5 12 7-7 7 7" /></svg>
+          <span class="sr-only">Enviar</span>
+        </button>
       </div>
-      <p class="pre">{plan.purpose}</p>
-
-      <h4>Entidades</h4>
-      <ul>{#each plan.entities as e}<li><b>{e.name}</b> — {e.fields.join(", ")}</li>{/each}</ul>
-      <h4>Flujos</h4>
-      <ul>{#each plan.flows as f}<li><b>{f.name}</b>: {f.steps.join(" → ")}</li>{/each}</ul>
-      <h4>Restricciones</h4>
-      <ul>{#each plan.constraints as c}<li>{c.statement}</li>{/each}</ul>
-
-      <!-- Shown as prominently as the rest, not folded away: a plan that hides what it does
-           not know reads as more certain than it is. -->
-      <h4 class="warn">Lo que este plan NO resuelve</h4>
-      <ul class="warn-list">{#each plan.openQuestions as q}<li>{q}</li>{/each}</ul>
-
-      <div class="actions">
-        <button class="btn btn--primary" onclick={approve} disabled={busy}>Aceptar el plan</button>
-        <input bind:value={feedback} placeholder="Qué cambiarías…" />
-        <button class="btn" onclick={reject} disabled={busy || !feedback.trim()}>Pedir cambios</button>
-      </div>
     </div>
-  {/if}
+  </section>
 
-  {#if plans.length > 1}
-    <p class="dim versions">Versiones: {plans.map((p) => `v${p.version}`).join(" → ")}</p>
-  {/if}
-
-  {#if state === "PLAN_APPROVED"}
-    <div class="card">
-      <h3>Plan aprobado</h3>
-      <p class="dim">A partir de acá el plan no se modifica. El agente lo usa como especificación.</p>
-      <button class="btn btn--primary" onclick={generate} disabled={busy}>Generar el proyecto</button>
-    </div>
-  {/if}
-
-  {#if steps.length}
-    <div class="card">
-      <h3>{state === "BACKEND_GENERATION" ? "Generando" : "Lo que pasó"}</h3>
-      <ol class="steps">{#each steps as s}<li>{s}</li>{/each}</ol>
-      {#if state === "BACKEND_GENERATION"}<p class="dim pulse">…</p>{/if}
-    </div>
-  {/if}
-
-  {#if project}
-    {@const badge = badgeForProject(project.status)}
-    <div class="card">
-      <div class="row">
-        <h3>{project.name}</h3>
-        <span class="badge badge--{badge.tone}">{badge.label}</span>
-      </div>
-      <p class="dim">{badge.detail}</p>
-      <p class="dim">Los {project.totals.files} archivos están a la derecha. El ZIP se baja desde ahí.</p>
-      <button class="btn" onclick={restart}>Empezar otro</button>
-    </div>
-  {/if}
-
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-</div>
-</section>
-
-<Files {project} {busy} />
+  <Files {project} {busy} />
 </div>
 
 <style>
   /* Three panes across the window: the sidebar is a sibling in index.astro, the chat is a
      fixed column, and the project panel takes whatever is left — code is what wants the
-     room. The chat scrolls on its own so a long conversation never pushes the file tree
-     off the screen. */
+     room. Only the transcript scrolls, so the composer stays put like any chat. */
   .panes { display: flex; flex: 1; min-height: 0; min-width: 0; }
-  .chat { flex: 0 0 clamp(360px, 34vw, 480px); min-width: 0; overflow-y: auto; padding: 1.6rem clamp(1rem, 2.2vw, 1.8rem); }
-  .chat__head { margin-bottom: 1.2rem; }
-  .chat__head h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-  .run { display: flex; flex-direction: column; gap: 1rem; }
+  .chat {
+    flex: 0 0 clamp(360px, 34vw, 480px);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .chat__head { padding: 1.4rem clamp(1rem, 2.2vw, 1.6rem) 0.8rem; }
+  .chat__head h1 { margin: 0 0 0.2rem; font-size: 1.3rem; }
+  .dim { color: var(--text-dim); margin: 0.2rem 0; }
+
+  .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 0.4rem clamp(1rem, 2.2vw, 1.6rem) 1rem; display: flex; flex-direction: column; gap: 0.9rem; }
+  .opening { color: var(--text-dim); margin: 0.5rem 0; line-height: 1.6; }
+
+  .turn { display: flex; flex-direction: column; }
+  .turn--user { align-items: flex-end; }
+  .bubble { max-width: 88%; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px 14px 4px 14px; padding: 0.55rem 0.85rem; white-space: pre-wrap; }
+  .pairs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+  .pairs li { font-size: 0.88rem; }
+  .pairs span { color: var(--text-dim); }
+
+  /* The agent speaks without a bubble: on a narrow column, two facing bubbles halve the
+     width available to the one side that has paragraphs, lists and a plan to show. */
+  .said { margin: 0; white-space: pre-wrap; line-height: 1.6; }
+  .error { color: var(--bad); margin: 0; }
+
+  .done { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.9rem 1.1rem; }
+  .done__head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.3rem; }
+  .done .btn { margin-top: 0.7rem; }
+
+  .versions { margin: 0; font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim); }
+  .cta { align-items: flex-start; }
+
+  .foot { position: relative; flex: none; padding: 0.6rem clamp(1rem, 2.2vw, 1.6rem) 1rem; border-top: 1px solid var(--line); }
+
+  .composer { display: flex; align-items: flex-end; gap: 0.5rem; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 0.45rem 0.45rem 0.45rem 0.85rem; }
+  .composer:focus-within { border-color: color-mix(in oklab, var(--accent) 55%, var(--line)); }
+  .composer--off { opacity: 0.6; }
+  .composer textarea {
+    flex: 1; min-width: 0; resize: none;
+    max-height: 9rem;
+    background: none; border: 0; color: var(--text); font: inherit; line-height: 1.5;
+    padding: 0.3rem 0;
+  }
+  .composer textarea:focus { outline: none; }
+  .composer textarea::placeholder { color: var(--text-dim); }
+
+  .send { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-ink); }
+  .send:disabled { background: var(--surface-2); color: var(--text-dim); cursor: not-allowed; }
+  .send svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
   /* Below this the two panes stack, and the chat stops being a scroll container of its own
      — nested scrolling on a phone means one of the two always traps the gesture. */
   @media (max-width: 1100px) {
     .panes { flex-direction: column; }
-    .chat { flex: 0 0 auto; overflow: visible; }
+    .chat { flex: 0 0 auto; }
+    .transcript { overflow: visible; }
+    /* The page scrolls instead of the transcript here, so the composer would drift off the
+       bottom as the conversation grows — and the questionnaire, which hangs off it, with it.
+       Sticky keeps both reachable without nesting a second scroll container inside the
+       page's own. */
+    .foot { position: sticky; bottom: 0; background: var(--bg); }
   }
-  h2 { margin: 0 0 0.35rem; font-size: 1.35rem; }
-  h3 { margin: 0 0 0.35rem; font-size: 1.05rem; }
-  h4 { margin: 1rem 0 0.3rem; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
-  h4.warn { color: var(--pending); }
-  .dim { color: var(--text-dim); margin: 0.2rem 0; }
-  .pre { white-space: pre-wrap; }
-  .row { display: flex; align-items: center; gap: 0.75rem; justify-content: space-between; }
-  ul, ol { margin: 0.2rem 0; padding-left: 1.1rem; }
-  .warn-list { color: var(--pending); }
-  .steps { font-family: var(--mono); font-size: 0.85rem; color: var(--text-dim); }
-  .q { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.75rem 0; }
-  textarea, input, select {
-    width: 100%; background: var(--surface-2); color: var(--text);
-    border: 1px solid var(--line); border-radius: 10px; padding: 0.65rem 0.8rem; font: inherit;
-  }
-  .actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
-  .actions input { flex: 1 1 14rem; width: auto; }
-  .versions { font-family: var(--mono); font-size: 0.82rem; }
-  .error { color: var(--bad); }
-  .btn { text-decoration: none; display: inline-block; }
 </style>
