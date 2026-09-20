@@ -11,8 +11,12 @@ export const prerender = false
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CodeZard</title>
-    <link rel="icon" href="/mascota.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/mascota.svg" />
+    <!-- The 192px copy, not the 1254px original: the mark is drawn at 26px in the sidebar
+         and at 16 in the tab, so shipping the full-size file would spend 879 kB to fill a
+         space smaller than this comment. The original stays in `public/` for anywhere it
+         is actually wanted at size. -->
+    <link rel="icon" href="/lizard-face-192.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/lizard-face-192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Gantari:wght@400;600;700&display=swap" rel="stylesheet" />
