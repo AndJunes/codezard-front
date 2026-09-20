@@ -31,6 +31,20 @@ export const prerender = false
           : matchMedia("(max-width: 860px)").matches
             ? "collapsed"
             : "expanded"
+
+      // The chat column, for the same reason: it is rendered on the server as open, so
+      // without this a hidden one appears and then vanishes on every load. The island keeps
+      // both of these up to date once it hydrates.
+      var chat = null
+      var width = null
+      try {
+        chat = localStorage.getItem("cz:chat-open")
+        width = Number(localStorage.getItem("cz:chat-width"))
+      } catch {}
+      document.documentElement.dataset.chat = chat === "no" ? "closed" : "open"
+      if (Number.isFinite(width) && width >= 320) {
+        document.documentElement.style.setProperty("--chat-w", Math.round(width) + "px")
+      }
     </script>
   </head>
   <body>

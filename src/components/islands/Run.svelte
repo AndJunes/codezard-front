@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte"
   import { mayGenerate, next, type State } from "../../lib/flow/machine"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
@@ -21,6 +22,74 @@
 
   let transcript: HTMLDivElement | undefined
   let composer: HTMLTextAreaElement | undefined
+  let panes: HTMLDivElement | undefined
+
+  /**
+   * The chat column can be narrowed or put away entirely.
+   *
+   * Both, not one: narrowing is for reading a long file beside the conversation, hiding is
+   * for reading the project with nothing else on screen. A single "collapse" button would
+   * have forced a choice between them.
+   */
+  const MIN_CHAT = 320
+  const MAX_CHAT_FRACTION = 0.62
+  let chatWidth = $state(420)
+  let chatOpen = $state(true)
+  let dragging = $state(false)
+
+  /**
+   * Both panes are always rendered; which one shows is `data-chat` on <html>, and the
+   * inline script in <head> sets it before the first paint.
+   *
+   * Switching the markup from here instead meant the server rendered the conversation, the
+   * island hydrated, and only then did it disappear — a flash of the thing being hidden, on
+   * every single load.
+   */
+  onMount(() => {
+    const root = document.documentElement
+    chatOpen = root.dataset.chat !== "closed"
+    const stored = Number(getComputedStyle(root).getPropertyValue("--chat-w").replace("px", ""))
+    if (Number.isFinite(stored) && stored >= MIN_CHAT) chatWidth = stored
+  })
+
+  $effect(() => {
+    const root = document.documentElement
+    root.dataset.chat = chatOpen ? "open" : "closed"
+    root.style.setProperty("--chat-w", `${Math.round(chatWidth)}px`)
+    try {
+      localStorage.setItem("cz:chat-width", String(Math.round(chatWidth)))
+      localStorage.setItem("cz:chat-open", chatOpen ? "yes" : "no")
+    } catch {}
+  })
+
+  const clampChat = (width: number): number =>
+    Math.max(MIN_CHAT, Math.min(width, (panes?.clientWidth ?? 1200) * MAX_CHAT_FRACTION))
+
+  function grab(event: PointerEvent) {
+    const handle = event.currentTarget as HTMLElement
+    handle.setPointerCapture(event.pointerId)
+    dragging = true
+  }
+
+  function drag(event: PointerEvent) {
+    if (!dragging || !panes) return
+    event.preventDefault()
+    chatWidth = clampChat(event.clientX - panes.getBoundingClientRect().left)
+  }
+
+  function drop(event: PointerEvent) {
+    ;(event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId)
+    dragging = false
+  }
+
+  // A divider that can only be dragged is a divider a keyboard cannot move at all.
+  function nudge(event: KeyboardEvent) {
+    const step = event.shiftKey ? 64 : 16
+    if (event.key === "ArrowLeft") chatWidth = clampChat(chatWidth - step)
+    else if (event.key === "ArrowRight") chatWidth = clampChat(chatWidth + step)
+    else return
+    event.preventDefault()
+  }
 
   /**
    * The plan is read back out of the transcript instead of being kept beside it.
@@ -236,10 +305,21 @@
   }
 </script>
 
-<div class="panes">
+<div class="panes" class:panes--dragging={dragging} bind:this={panes}>
+  <button class="rail" onclick={() => (chatOpen = true)} title="Mostrar la conversación">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+    <span class="rail__label">Construir un proyecto</span>
+  </button>
+
   <section class="chat">
     <header class="chat__head">
-      <h1>Construir un proyecto</h1>
+      <div class="chat__title">
+        <h1>Construir un proyecto</h1>
+        <button class="hide" onclick={() => (chatOpen = false)} title="Esconder la conversación">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
+          <span class="sr-only">Esconder la conversación</span>
+        </button>
+      </div>
       <p class="dim">Contás la idea. El PM la convierte en un plan. Vos lo aprobás. Recién ahí se genera.</p>
     </header>
 
@@ -334,6 +414,23 @@
     </div>
   </section>
 
+  <div
+    class="grip"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Ancho de la conversación"
+    aria-valuenow={Math.round(chatWidth)}
+    aria-valuemin={MIN_CHAT}
+    aria-valuemax={Math.round((panes?.clientWidth ?? 1200) * MAX_CHAT_FRACTION)}
+    tabindex="0"
+    onpointerdown={grab}
+    onpointermove={drag}
+    onpointerup={drop}
+    onpointercancel={drop}
+    onkeydown={nudge}
+    ondblclick={() => (chatWidth = clampChat(420))}
+  ></div>
+
   <Files {project} {busy} />
 </div>
 
@@ -342,15 +439,58 @@
      fixed column, and the project panel takes whatever is left — code is what wants the
      room. Only the transcript scrolls, so the composer stays put like any chat. */
   .panes { display: flex; flex: 1; min-height: 0; min-width: 0; }
+  /* Driven by a custom property rather than an inline `width`, so the stacked layout below
+     can override it. An inline style would outrank the media query and leave a 420px column
+     on a phone. */
   .chat {
-    flex: 0 0 clamp(360px, 34vw, 480px);
+    flex: 0 0 var(--chat-w, 420px);
     min-width: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
   }
   .chat__head { padding: 1.4rem clamp(1rem, 2.2vw, 1.6rem) 0.8rem; }
-  .chat__head h1 { margin: 0 0 0.2rem; font-size: 1.3rem; }
+  .chat__title { display: flex; align-items: flex-start; gap: 0.6rem; }
+  .chat__head h1 { margin: 0 0 0.2rem; font-size: 1.3rem; flex: 1; min-width: 0; }
+
+  .hide { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: var(--text-dim); }
+  .hide:hover { background: var(--surface-2); color: var(--text); }
+  .hide svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Put away, the column leaves a rail rather than nothing: a conversation that vanishes
+     without a trace looks like it was lost, not hidden. */
+  /* Which of the two shows is decided by <html data-chat>, so it is already right on the
+     first frame. The island only keeps that attribute in step. */
+  .rail { display: none; }
+  :global(:root[data-chat="closed"]) .rail { display: flex; }
+  :global(:root[data-chat="closed"]) .chat,
+  :global(:root[data-chat="closed"]) .grip { display: none; }
+
+  .rail {
+    /* No `display` here on purpose: it is set by the two state rules above, and repeating
+       it below them would win on source order and show the rail while the chat is open. */
+    flex: 0 0 40px;
+    flex-direction: column; align-items: center; gap: 0.8rem;
+    padding: 1rem 0;
+    border: 0; border-right: 1px solid var(--line);
+    background: none; color: var(--text-dim);
+  }
+  .rail:hover { background: var(--surface); color: var(--text); }
+  .rail svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .rail__label { writing-mode: vertical-rl; font-size: 0.8rem; letter-spacing: 0.02em; white-space: nowrap; }
+
+  .grip {
+    flex: 0 0 5px;
+    cursor: col-resize;
+    background: var(--line);
+    /* Widens the grab area without widening the line: 5px of border-box with the colour
+       inset, so the target is comfortable and the seam still reads as one pixel. */
+    border-inline: 2px solid var(--bg);
+    background-clip: padding-box;
+  }
+  .grip:hover, .grip:focus-visible { background: var(--accent); }
+  .panes--dragging { cursor: col-resize; user-select: none; }
+  .panes--dragging .grip { background: var(--accent); }
   .dim { color: var(--text-dim); margin: 0.2rem 0; }
 
   .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 0.4rem clamp(1rem, 2.2vw, 1.6rem) 1rem; display: flex; flex-direction: column; gap: 0.9rem; }
@@ -399,7 +539,13 @@
      — nested scrolling on a phone means one of the two always traps the gesture. */
   @media (max-width: 1100px) {
     .panes { flex-direction: column; }
+    /* Stacked, width is the screen's and the divider has nothing to divide. Hiding stays:
+       it is the one of the two that still means something on a phone. */
     .chat { flex: 0 0 auto; }
+    .grip { display: none; }
+    .rail { flex: 0 0 auto; flex-direction: row; justify-content: center; padding: 0.6rem; border-right: 0; border-bottom: 1px solid var(--line); }
+    .rail svg { transform: rotate(90deg); }
+    .rail__label { writing-mode: horizontal-tb; }
     .transcript { overflow: visible; }
     /* The page scrolls instead of the transcript here, so the composer would drift off the
        bottom as the conversation grows — and the questionnaire, which hangs off it, with it.
