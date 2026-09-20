@@ -14,6 +14,24 @@ export const prerender = false
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Gantari:wght@400;600;700&display=swap" rel="stylesheet" />
+    <!--
+      Runs before the sidebar paints, which is the whole point: read the stored state here
+      and a collapsed sidebar is collapsed on the first frame instead of flashing open.
+      `is:inline` keeps Astro from bundling it into a deferred module.
+    -->
+    <script is:inline>
+      var stored = null
+      try { stored = localStorage.getItem("cz:sidebar") } catch {}
+      // No stored choice: start as the icon rail on a narrow screen, open on a wide one.
+      // Deciding it here rather than in a media query keeps the toggle meaningful at every
+      // width — CSS that forces the rail would ignore whatever the user picks.
+      document.documentElement.dataset.sidebar =
+        stored === "collapsed" || stored === "expanded"
+          ? stored
+          : matchMedia("(max-width: 860px)").matches
+            ? "collapsed"
+            : "expanded"
+    </script>
   </head>
   <body>
     <div class="app">
@@ -32,7 +50,8 @@ export const prerender = false
 
 <style>
   .app { display: flex; min-height: 100vh; }
-  main { flex: 1; padding: 2rem clamp(1rem, 4vw, 3rem); }
+  main { flex: 1; min-width: 0; padding: 2rem clamp(1rem, 4vw, 3rem); }
+  @media (max-width: 860px) { main { margin-left: 68px; } }
   header { margin-bottom: 1.5rem; }
   h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
   header p { margin: 0; color: var(--text-dim); }
