@@ -8,6 +8,8 @@
 export type ExecutionStatus = "passed" | "failed" | "no_evidence" | "not_executed"
 
 export type ProjectStatus =
+  /** The plan asked for files that were never written. Off to the side, like FAILED. */
+  | "INCOMPLETE"
   | "GENERATED"
   | "VALIDATED"
   | "EXECUTED"

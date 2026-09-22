@@ -155,7 +155,15 @@
       </p>
 
       {#if !project.download_url}
-        <p class="nodl">Sin descarga: {project.integrity.reason || "no pasó el control de integridad"}.</p>
+        <!-- Which reason, and it is not always the same one. The ZIP can be perfectly well
+             formed and the project still not be deliverable — INCOMPLETE and FAILED take the
+             button away on the verdict, not on the integrity check. Reading `integrity.reason`
+             unconditionally printed "Sin descarga: ." for exactly those cases. -->
+        <p class="nodl">
+          Sin descarga: {project.integrity.ok
+            ? project.reason || "el proyecto no superó la verificación"
+            : project.integrity.reason || "no pasó el control de integridad"}.
+        </p>
       {/if}
 
       <dl class="stats">
