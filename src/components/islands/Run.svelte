@@ -30,6 +30,14 @@
   let draft = $state("")
   let busy = $state(false)
   let project = $state<Project | null>(null)
+  /**
+   * Files seen so far, while they are being written. Empty once `project` arrives.
+   *
+   * A Map and not the Project shape on purpose: this is a growing list of paths and text,
+   * with no id, no verdict and no ZIP — inventing those fields to reuse the type would mean
+   * drawing a status badge for a project that has not been certified yet.
+   */
+  let written = $state(new Map<string, string | null>())
 
   let transcript: HTMLDivElement | undefined
   let composer: HTMLTextAreaElement | undefined
@@ -61,6 +69,12 @@
     chatOpen = root.dataset.chat !== "closed"
     const stored = Number(getComputedStyle(root).getPropertyValue("--chat-w").replace("px", ""))
     if (Number.isFinite(stored) && stored >= MIN_CHAT) chatWidth = stored
+
+    let previous = ""
+    try {
+      previous = localStorage.getItem(STORED_RUN) ?? ""
+    } catch {}
+    if (previous) void resume(previous)
   })
 
   $effect(() => {
@@ -174,6 +188,48 @@
     runId = next.runId
     state = next.state
     pending = next.questionnaire?.questions?.length ? next.questionnaire : null
+    remember(next.runId)
+  }
+
+  const STORED_RUN = "cz:run"
+
+  /** The id, so a reload has something to ask about. Nothing else is kept here. */
+  function remember(id: string): void {
+    try {
+      if (id) localStorage.setItem(STORED_RUN, id)
+      else localStorage.removeItem(STORED_RUN)
+    } catch {}
+  }
+
+  /**
+   * Put a reloaded page back where it was.
+   *
+   * Everything drawn here is rebuilt from the RUN, not from anything the browser kept: the
+   * idea, the summary, the questionnaire and the plan all live on the server, which is what
+   * moving the orchestration bought. A refresh mid-generation used to lose the conversation
+   * while the work carried on with nobody able to watch it.
+   */
+  async function resume(id: string): Promise<void> {
+    let next: Run
+    try {
+      next = await run.read(id)
+    } catch {
+      remember("")  // expired, or from a server that has restarted since
+      return
+    }
+    if (next.idea) say({ id: messageId(), from: "user", kind: "text", text: next.idea })
+    if (next.summary) say(agent(next.summary))
+    for (const answer of next.answers) {
+      say({ id: messageId(), from: "user", kind: "answers",
+            pairs: [{ question: answer.questionId, answer: answer.value }] })
+    }
+    if (next.plan) say({ id: messageId(), from: "agent", kind: "plan", plan: next.plan })
+    show(next)
+
+    if (next.state === "BACKEND_GENERATION" || next.state === "ZIP_READY" ||
+        next.state === "FAILED") {
+      await watch(() => run.follow(id), id)
+    }
   }
 
   function fail(error: unknown) {
@@ -293,7 +349,24 @@
     if (!plan || state !== "PLAN_APPROVED" || busy) return
     busy = true
     project = null
+    written = new Map()
 
+    // The plan is not sent: the run holds the approved one, and sending it would put back
+    // the thing this whole change removed — a body the caller controls deciding what gets
+    // built.
+    await watch(() => run.generate(runId), runId, "PLAN_APPROVED")
+  }
+
+  /**
+   * Read a stream of events into the transcript, from whichever end supplies it.
+   *
+   * Starting a generation and reattaching to one are the same job once the bytes are
+   * flowing, and the only difference — what to fall back to if it breaks — is a parameter.
+   * Writing it twice is how the reattached one quietly stops getting the closing project.
+   */
+  async function watch(open: () => Promise<ReadableStream<Uint8Array>>, id: string,
+                       onFailure: RunState = "FAILED"): Promise<void> {
+    busy = true
     say({ id: messageId(), from: "agent", kind: "steps", steps: [], running: true, ms: 0 })
     // Read back through the proxy: mutating the object that was pushed would not be tracked.
     const live = messages.at(-1) as Extract<Message, { kind: "steps" }>
@@ -302,18 +375,14 @@
 
     try {
       state = "BACKEND_GENERATION"
-      // The plan is not sent: the run holds the approved one, and sending it would put back
-      // the thing this whole change removed — a body the caller controls deciding what gets
-      // built.
-      const body = await run.generate(runId)
-      for await (const event of readEvents(body)) apply(event, live)
+      for await (const event of readEvents(await open())) apply(event, live)
       // Read back rather than assumed. The server knows whether an artifact came out of that
       // stream; the browser only knows the stream ended.
-      show(await run.read(runId))
+      show(await run.read(id))
       if (project) say({ id: messageId(), from: "agent", kind: "project", project })
     } catch (e) {
       fail(e)
-      state = "PLAN_APPROVED"
+      state = onFailure
     } finally {
       clearInterval(ticking)
       live.ms = Date.now() - started
@@ -323,8 +392,17 @@
   }
 
   function apply(event: AgentEvent, live: Extract<Message, { kind: "steps" }>) {
-    if (event.type === "step") live.steps.push(`${event.name} · ${event.summary}`)
-    else if (event.type === "phase") live.steps.push(event.text)
+    if (event.type === "step") {
+      live.steps.push(`${event.name} · ${event.summary}`)
+      // The agent sends each group's files as it writes them, so the panel fills up during
+      // the generation instead of appearing all at once ten minutes later. A preview: the
+      // `done` event below replaces it with the project that was actually certified, which
+      // can differ wherever a repair changed something.
+      for (const [path, text] of Object.entries(event.detail?.wrote ?? {})) {
+        written.set(path, text)
+      }
+      written = written
+    } else if (event.type === "phase") live.steps.push(event.text)
     if (isDone(event)) project = event.project
   }
 
@@ -335,6 +413,8 @@
     pending = null
     draft = ""
     project = null
+    written = new Map()
+    remember("")
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -494,7 +574,7 @@
   <!-- `generating`, not `busy`. The panel used to say "the agent is writing the files" while
        the PM was still reading the idea, because `busy` is true for every call the island
        makes. It is only true here when the backend agent is actually producing something. -->
-  <Files {project} busy={state === "BACKEND_GENERATION"} />
+  <Files {project} {written} busy={state === "BACKEND_GENERATION"} />
 </div>
 
 <style>

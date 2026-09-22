@@ -55,6 +55,16 @@ export type StepEvent = {
   summary: string
   ms: number
   source: string
+  detail?: {
+    /**
+     * What this step WROTE: path to content, for the generation steps.
+     *
+     * It is a preview, and `done` stays authoritative — a repair can replace any of these
+     * before the project is certified, so the two are allowed to differ. `null` means the
+     * agent sent the path without its text, which it does past its own size ceiling.
+     */
+    wrote?: Record<string, string | null>
+  } | null
 }
 
 export type DoneEvent = {

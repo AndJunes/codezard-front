@@ -8,9 +8,36 @@
   // Not an island of its own: it renders inside Run.svelte's island because it reads the
   // same `project`. Two islands would mean two copies of that state and a way to keep them
   // in sync — a shared store for something that never leaves one screen.
-  let { project, busy }: { project: Project | null; busy: boolean } = $props()
+  let { project, written, busy }: {
+    project: Project | null
+    /** Files the agent has written so far, while it is still writing. */
+    written: Map<string, string | null>
+    busy: boolean
+  } = $props()
 
-  const tree = $derived(project ? buildTree(project.files) : [])
+  /**
+   * What to draw: the certified project when there is one, otherwise what has arrived.
+   *
+   * The panel used to stay empty until the closing event, so a ten-minute generation was a
+   * spinner and then everything at once. These are the same files — the agent sends each
+   * group's content as it writes it — but they carry no verdict and no ZIP yet, which is why
+   * the header below draws no status badge until `project` lands.
+   */
+  const files = $derived(
+    project
+      ? project.files
+      : [...written].map(([path, text]) => ({
+          path,
+          text,
+          bytes: text ? new TextEncoder().encode(text).length : 0,
+          lines: text ? text.split("\n").length : 0,
+          sha256: "",
+          why_no_text: text === null ? "el agente no mandó el contenido de este archivo" : undefined,
+        })),
+  )
+  const showing = $derived(files.length > 0)
+
+  const tree = $derived(buildTree(files))
 
   let openDirs = $state(new Set<string>())
   let selectedPath = $state<string | null>(null)
@@ -25,7 +52,15 @@
     selectedPath = defaultSelection(project.files)
   })
 
-  const selected = $derived(project?.files.find((file) => file.path === selectedPath) ?? null)
+  // While the files are still arriving, keep the tree open and keep a file selected — a
+  // directory that collapses itself as its siblings appear is worse than no preview.
+  $effect(() => {
+    if (project || written.size === 0) return
+    openDirs = new Set(directoryPaths(tree))
+    if (!selectedPath || !written.has(selectedPath)) selectedPath = defaultSelection(files)
+  })
+
+  const selected = $derived(files.find((file) => file.path === selectedPath) ?? null)
   /**
    * A file that ends in a newline splits into a final empty string. Numbering it would put
    * a line 99 on a file the agent reports as 98 lines long — two numbers on screen
@@ -128,8 +163,9 @@
 {/snippet}
 
 <section class="files" aria-label="Estructura del proyecto">
-  {#if project}
-    {@const badge = badgeForProject(project.status)}
+  {#if showing}
+    {#if project}
+      {@const badge = badgeForProject(project.status)}
     <header class="head">
       <p class="kicker">Proyecto generado</p>
 
@@ -173,6 +209,20 @@
         {#if project.zip}<div><dt>ZIP</dt><dd>{kb(project.zip.bytes)}</dd></div>{/if}
       </dl>
     </header>
+    {:else}
+      <!-- Still arriving. The name, the verdict, the totals and the ZIP do not exist yet and
+           are not invented: what there is to say is how many files have landed. -->
+      <header class="head head--live">
+        <p class="kicker">Escribiéndose</p>
+        <p class="status">
+          <span class="badge badge--pending">En curso</span>
+          <span class="status__why">
+            {written.size} {written.size === 1 ? "archivo escrito" : "archivos escritos"} ·
+            el veredicto y la descarga llegan al terminar
+          </span>
+        </p>
+      </header>
+    {/if}
 
     <div class="split">
       <nav class="tree" aria-label="Archivos">{@render nodes(tree, 0)}</nav>
@@ -225,7 +275,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true" class="blank__ico"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
       {#if busy}
         <p class="pulse">El agente está escribiendo los archivos</p>
-        <p class="meta">La estructura aparece cuando termina.</p>
+        <p class="meta">Van a ir apareciendo acá según los escriba.</p>
       {:else}
         <p>Acá vas a ver cada archivo antes de descargar nada</p>
         <p class="meta">El árbol completo, con el contenido de cada uno.</p>
@@ -253,6 +303,7 @@
     display: flex; flex-direction: column; gap: 0.55rem;
   }
   .head--empty { gap: 0.15rem; }
+  .head--live { gap: 0.35rem; }
 
   /* Four steps down in size from here to the stats, so the eye is told what to read first
      instead of being handed four things of equal weight. */

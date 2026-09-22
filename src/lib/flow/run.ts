@@ -85,8 +85,21 @@ export const read = (runId: string) => call(`/${runId}`, "GET")
 
 /** The generation's event stream. The caller reads it; the run's state moves server-side. */
 export async function generate(runId: string): Promise<ReadableStream<Uint8Array>> {
-  const response = await fetch(`/api/run/${runId}/generation`, {
-    method: "POST",
+  return stream(`/api/run/${runId}/generation`, "POST")
+}
+
+/**
+ * Everything the run has already said, and everything it says next.
+ *
+ * What a tab that lost the connection asks for. `read` says WHERE a run is; this says how it
+ * got there. A finished run replays and ends immediately, which is what a reload after the
+ * fact wants; one still generating replays and then keeps going.
+ */
+export const follow = (runId: string) => stream(`/api/run/${runId}/events`, "GET")
+
+async function stream(path: string, method: string): Promise<ReadableStream<Uint8Array>> {
+  const response = await fetch(path, {
+    method,
     headers: { "Content-Type": "application/json" },
   })
   if (!response.ok || !response.body) {
