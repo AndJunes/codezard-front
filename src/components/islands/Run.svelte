@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte"
-  import { mayGenerate, next, type State } from "../../lib/flow/machine"
+  import * as run from "../../lib/flow/run"
+  import type { Run, RunState } from "../../lib/flow/run"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
   import { messageId, type Message } from "../../lib/chat/messages"
-  import type { Answer, Interpretation, Plan, Questionnaire } from "../../lib/plan/schema"
+  import type { Answer, Plan, Questionnaire } from "../../lib/plan/schema"
   import Files from "./Files.svelte"
   import QuestionnairePopup from "./Questionnaire.svelte"
   import PlanCard from "./PlanCard.svelte"
@@ -13,7 +14,17 @@
   // The only interactive piece in the app. Everything else is HTML, which is the reason for
   // choosing Astro: a page that mostly sits still should not ship a framework to sit still.
 
-  let state = $state<State>("IDEA")
+  /**
+   * Where the run is, as the SERVER last reported it. Read, never assigned.
+   *
+   * It used to be assigned here on every step, by a state machine that shipped in this
+   * bundle — along with the round counter, the policy for merging answers across rounds, the
+   * prompt the backend agent was given, and `plan.status = "approved"`, which was how
+   * approval came to be a field the browser wrote rather than an act the server performed.
+   * All of it is in the gateway now. What is left here is what a screen is for.
+   */
+  let state = $state<RunState>("IDEA")
+  let runId = $state("")
   let messages = $state<Message[]>([])
   let pending = $state<Questionnaire | null>(null)
   let draft = $state("")
@@ -94,17 +105,18 @@
   /**
    * The plan is read back out of the transcript instead of being kept beside it.
    *
-   * Two copies would have to be mutated together — approving one and leaving the rendered
-   * one at "draft" is exactly the kind of drift that shows up as a button that does nothing.
-   * Here the message holds the only copy, so `plan.status = "approved"` is visible wherever
-   * it is drawn.
+   * Two copies would have to be kept in step, and a rendered plan that disagrees with the
+   * one being acted on is exactly the kind of drift that shows up as a button that does
+   * nothing. The message holds the only copy.
+   *
+   * Nothing here writes to it any more. `status` is the server's to set, and this reads it.
    */
   const planMessages = $derived(
     messages.filter((m): m is Extract<Message, { kind: "plan" }> => m.kind === "plan"),
   )
   const plan = $derived(planMessages.at(-1)?.plan ?? null)
 
-  const HINTS: Partial<Record<State, string>> = {
+  const HINTS: Partial<Record<RunState, string>> = {
     PM_ANALYSIS: "El PM está leyendo…",
     QUESTIONNAIRE: "Respondé las preguntas de arriba",
     PLAN_REJECTED: "El PM está revisando…",
@@ -151,20 +163,22 @@
     requestAnimationFrame(() => transcript?.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" }))
   })
 
-  function go(event: Parameters<typeof next>[1]) {
-    const to = next(state, event)
-    if (to) state = to
-  }
-
-  async function post(url: string, body: unknown, method = "POST") {
-    const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-    const data = await r.json()
-    if (!r.ok) throw new Error(data.detail ?? data.error ?? `HTTP ${r.status}`)
-    return data
+  /**
+   * Draw whatever the server says the run is now.
+   *
+   * The one place `state` changes. Before, nine `go()` calls moved a local machine and the
+   * screen believed itself; if the server disagreed — because a request failed, or because
+   * the run had moved on in another tab — nothing noticed.
+   */
+  function show(next: Run) {
+    runId = next.runId
+    state = next.state
+    pending = next.questionnaire?.questions?.length ? next.questionnaire : null
   }
 
   function fail(error: unknown) {
-    say({ id: messageId(), from: "agent", kind: "error", text: String(error) })
+    const text = error instanceof run.RunError ? error.message : String(error)
+    say({ id: messageId(), from: "agent", kind: "error", text })
   }
 
   function send() {
@@ -178,17 +192,14 @@
 
   async function describe(idea: string) {
     busy = true
+    state = "PM_ANALYSIS"  // optimistic, for the hint under the composer; `show` corrects it
     try {
-      go("DESCRIBE")
-      const interpretation: Interpretation = await post("/api/pm/analyze", { idea })
-      if (interpretation.summary) say(agent(interpretation.summary))
-      if (interpretation.questionnaire) {
-        pending = interpretation.questionnaire
-        go("ASK")
-      } else {
-        await propose([])
-      }
+      const started = await run.start(idea)
+      if (started.summary) say(agent(started.summary))
+      if (started.plan) say({ id: messageId(), from: "agent", kind: "plan", plan: started.plan })
+      show(started)
     } catch (e) {
+      state = "IDEA"
       fail(e)
     } finally {
       busy = false
@@ -201,7 +212,9 @@
     // stays readable next to everything else instead of vanishing with the popup.
     if (pairs.length) say({ id: messageId(), from: "user", kind: "answers", pairs })
     else say({ id: messageId(), from: "user", kind: "text", text: "Seguí sin esas respuestas." })
-    go("DESCRIBE")
+    // Only this round's answers are sent. Carrying every previous one along was this
+    // component's job because each request was independent; the run keeps them now, and
+    // merges them by question id so a later round never overwrites an earlier one.
     void propose(answers)
   }
 
@@ -214,21 +227,18 @@
 
   async function propose(answers: Answer[]) {
     busy = true
+    state = "PM_ANALYSIS"
     try {
-      const idea = messages.find((m) => m.from === "user" && m.kind === "text")
-      const result = await post("/api/pm/plan", {
-        idea: idea && idea.kind === "text" ? idea.text : "",
-        answers,
-      })
-      if ("questions" in result) {
-        // A second round is a normal outcome: the answers opened something new.
-        pending = result as Questionnaire
-        go("ASK")
-      } else {
-        say({ id: messageId(), from: "agent", kind: "plan", plan: result as Plan })
-        go("PROPOSE")
+      // The idea used to be rebuilt by scanning the transcript for the first user message,
+      // and the round number was sent from here and dropped by the route on the way. The run
+      // holds both.
+      const next = await run.answer(runId, answers)
+      if (next.plan && next.state === "PLAN_REVIEW") {
+        say({ id: messageId(), from: "agent", kind: "plan", plan: next.plan })
       }
+      show(next)
     } catch (e) {
+      state = "QUESTIONNAIRE"
       fail(e)
     } finally {
       busy = false
@@ -238,12 +248,33 @@
   async function revise(feedback: string) {
     if (!plan) return
     busy = true
+    state = "PM_REVISION"
     try {
-      go("REJECT")
-      go("REVISE")
-      const revised: Plan = await post("/api/pm/plan", { plan, feedback }, "PUT")
-      say({ id: messageId(), from: "agent", kind: "plan", plan: revised })
-      go("PROPOSE")
+      // The plan is not sent back up. The run knows which one is being rejected, which also
+      // means a stale tab cannot revise a version that is no longer current.
+      const next = await run.reject(runId, feedback)
+      if (next.plan) say({ id: messageId(), from: "agent", kind: "plan", plan: next.plan })
+      show(next)
+    } catch (e) {
+      state = "PLAN_REVIEW"
+      fail(e)
+    } finally {
+      busy = false
+    }
+  }
+
+  async function approve() {
+    if (!plan || busy) return
+    busy = true
+    try {
+      // `plan.status = "approved"` used to be the whole of this. The screen wrote the field,
+      // posted the object, and the server checked the field it had just been handed. Now the
+      // request IS the approval and the server records it; the plan the screen draws has the
+      // status the server set.
+      const next = await run.approve(runId)
+      if (next.plan) plan.status = next.plan.status
+      show(next)
+      say(agent("Plan aprobado. A partir de acá no se modifica: el agente lo usa como especificación."))
     } catch (e) {
       fail(e)
     } finally {
@@ -251,19 +282,15 @@
     }
   }
 
-  function approve() {
-    if (!plan) return
-    plan.status = "approved"
-    go("APPROVE")
-    say(agent("Plan aprobado. A partir de acá no se modifica: el agente lo usa como especificación."))
-  }
-
   function askForChanges() {
     composer?.focus()
   }
 
   async function generate() {
-    if (!plan || !mayGenerate(state) || busy) return
+    // `mayGenerate(state)` was a local table's opinion. The button is still hidden unless the
+    // run is approved, but that is now courtesy: the server refuses with a 409 either way,
+    // and the 409 is what makes it a rule.
+    if (!plan || state !== "PLAN_APPROVED" || busy) return
     busy = true
     project = null
 
@@ -274,18 +301,15 @@
     const ticking = setInterval(() => (live.ms = Date.now() - started), 250)
 
     try {
-      go("GENERATE")
-      const r = await fetch("/api/backend/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan }),
-      })
-      if (!r.ok || !r.body) {
-        const detail = await r.json().catch(() => ({}))
-        throw new Error(detail.detail ?? detail.error ?? `HTTP ${r.status}`)
-      }
-      for await (const event of readEvents(r.body)) apply(event, live)
-      go("DELIVER")
+      state = "BACKEND_GENERATION"
+      // The plan is not sent: the run holds the approved one, and sending it would put back
+      // the thing this whole change removed — a body the caller controls deciding what gets
+      // built.
+      const body = await run.generate(runId)
+      for await (const event of readEvents(body)) apply(event, live)
+      // Read back rather than assumed. The server knows whether an artifact came out of that
+      // stream; the browser only knows the stream ended.
+      show(await run.read(runId))
       if (project) say({ id: messageId(), from: "agent", kind: "project", project })
     } catch (e) {
       fail(e)
@@ -306,6 +330,7 @@
 
   function restart() {
     state = "IDEA"
+    runId = ""
     messages = []
     pending = null
     draft = ""
@@ -466,7 +491,10 @@
     ondblclick={() => (chatWidth = clampChat(420))}
   ></div>
 
-  <Files {project} {busy} />
+  <!-- `generating`, not `busy`. The panel used to say "the agent is writing the files" while
+       the PM was still reading the idea, because `busy` is true for every call the island
+       makes. It is only true here when the backend agent is actually producing something. -->
+  <Files {project} busy={state === "BACKEND_GENERATION"} />
 </div>
 
 <style>

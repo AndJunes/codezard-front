@@ -24,9 +24,22 @@
   /** Which questions had "Otra…" picked, so the free-text box stays open while typing. */
   let custom = $state<Record<string, boolean>>({})
 
-  const question = $derived(questionnaire.questions[index])
-  const isLast = $derived(index === questionnaire.questions.length - 1)
+  /**
+   * The question being asked, or `null` when there is none.
+   *
+   * It used to be indexed straight into the array, which is fine until the array is empty —
+   * and then `question.options` throws and takes the whole island down with it, leaving a
+   * blank screen and a conversation that cannot continue. An agent that opens a questionnaire
+   * with nothing in it is a bug on its side; this is the seatbelt.
+   */
+  const question = $derived(questionnaire.questions[index] ?? null)
+  const isLast = $derived(index >= questionnaire.questions.length - 1)
   const answered = $derived(Boolean(values[question?.id ?? ""]?.trim()))
+
+  // Nothing to ask: close it at once rather than render a dialog with no question in it.
+  $effect(() => {
+    if (!questionnaire.questions.length) ondismiss()
+  })
 
   function advance() {
     if (isLast) finish()
@@ -68,6 +81,7 @@
 
 <svelte:window on:keydown={onkeydown} />
 
+{#if question}
 <section class="pop" role="dialog" aria-modal="false" aria-labelledby="q-title">
   <header>
     <h3 id="q-title">{question.text}</h3>
@@ -118,6 +132,7 @@
     </button>
   </footer>
 </section>
+{/if}
 
 <style>
   .pop {
