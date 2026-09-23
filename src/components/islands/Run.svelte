@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte"
+  import { SvelteMap } from "svelte/reactivity"
   import { fade } from "svelte/transition"
   import * as run from "../../lib/flow/run"
   import type { Run, RunState } from "../../lib/flow/run"
@@ -37,8 +38,14 @@
    * A Map and not the Project shape on purpose: this is a growing list of paths and text,
    * with no id, no verdict and no ZIP — inventing those fields to reuse the type would mean
    * drawing a status badge for a project that has not been certified yet.
+   *
+   * A `SvelteMap`, not `$state(new Map())`. Svelte proxies arrays and plain objects but not
+   * built-in Maps, so `.set()` on a `$state` Map notifies nobody — and the old
+   * `written = written` that followed it assigned the same reference, which is not a change
+   * either. The panel stayed on "escribiendo los archivos" for the whole generation while
+   * the files arrived, unseen, one `step` at a time.
    */
-  let written = $state(new Map<string, string | null>())
+  let written = new SvelteMap<string, string | null>()
 
   let transcript: HTMLDivElement | undefined
   let composer: HTMLTextAreaElement | undefined
@@ -360,7 +367,7 @@
     if (!plan || state !== "PLAN_APPROVED" || busy) return
     busy = true
     project = null
-    written = new Map()
+    written.clear()
 
     // The plan is not sent: the run holds the approved one, and sending it would put back
     // the thing this whole change removed — a body the caller controls deciding what gets
@@ -412,7 +419,6 @@
       for (const [path, text] of Object.entries(event.detail?.wrote ?? {})) {
         written.set(path, text)
       }
-      written = written
     } else if (event.type === "phase") live.steps.push(event.text)
     if (isDone(event)) project = event.project
   }
@@ -424,7 +430,7 @@
     pending = null
     draft = ""
     project = null
-    written = new Map()
+    written.clear()
     remember("")
   }
 
