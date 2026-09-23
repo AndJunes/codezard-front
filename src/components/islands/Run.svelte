@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte"
+  import { fade } from "svelte/transition"
   import * as run from "../../lib/flow/run"
   import type { Run, RunState } from "../../lib/flow/run"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
@@ -155,6 +156,15 @@
   const stage = $derived(STAGES.findIndex((s) => (s.states as readonly string[]).includes(state)))
 
   const canType = $derived((state === "IDEA" || state === "PLAN_REVIEW") && !pending && !busy)
+  /**
+   * The PM is mid-request: no partial text exists to show, only that it is working.
+   *
+   * Scoped to the PM's own two states on purpose. `BACKEND_GENERATION` is `busy` too, but that
+   * wait already has a live answer — the `steps` message's own "Trabajando" line — and a
+   * second, contentless dot bubble under it would just be noise repeating what it already
+   * says.
+   */
+  const thinking = $derived(busy && (state === "PM_ANALYSIS" || state === "PM_REVISION"))
   const hint = $derived(
     state === "IDEA"
       ? "Contá qué querés construir…"
@@ -174,6 +184,7 @@
   $effect(() => {
     void messages.length
     void pending
+    void thinking
     requestAnimationFrame(() => transcript?.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" }))
   })
 
@@ -508,6 +519,9 @@
                   <span class="badge badge--{badge.tone}">{badge.label}</span>
                 </div>
                 <p class="dim">{badge.detail}</p>
+                {#if message.project.reason && message.project.reason !== badge.detail}
+                  <p class="dim reason">{message.project.reason}</p>
+                {/if}
                 <p class="dim">Los {message.project.totals.files} archivos están a la derecha. El ZIP se baja desde ahí.</p>
                 <button class="btn" onclick={restart}>Empezar otro</button>
               </div>
@@ -517,6 +531,14 @@
           </div>
         {/if}
       {/each}
+
+      {#if thinking}
+        <div class="turn" transition:fade={{ duration: 120 }}>
+          <div class="typing" role="status" aria-label="El PM está escribiendo">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+      {/if}
 
       {#if planMessages.length > 1}
         <p class="versions">Versiones: {planMessages.map((m) => `v${m.plan.version}`).join(" → ")}</p>
@@ -673,8 +695,19 @@
   .said { margin: 0; white-space: pre-wrap; line-height: 1.6; }
   .error { color: var(--bad); margin: 0; }
 
+  /* Three dots and nothing else: there is no partial answer to show while the PM is mid
+     -request, only that it is working — the same thing "Trabajando" says in words for the
+     generation step below. */
+  .typing { display: flex; align-items: center; gap: 0.3rem; padding: 0.35rem 0.1rem; }
+  .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); animation: typing-bounce 1.2s ease-in-out infinite; }
+  .typing span:nth-child(2) { animation-delay: 0.15s; }
+  .typing span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes typing-bounce { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+  @media (prefers-reduced-motion: reduce) { .typing span { animation: none; opacity: 0.7; } }
+
   .done { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.9rem 1.1rem; }
   .done__head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.3rem; }
+  .done .reason { font-family: var(--mono); font-size: 0.82rem; }
   .done .btn { margin-top: 0.7rem; }
 
   .versions { margin: 0; font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim); }
