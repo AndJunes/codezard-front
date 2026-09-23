@@ -3,17 +3,65 @@
   import { badgeForProject } from "../../lib/ui/status"
   import { kindOf } from "../../lib/project/language"
   import { highlight, renderMarkdown } from "../../lib/project/render"
+  import * as run from "../../lib/flow/run"
   import type { Project } from "../../lib/agents/events"
+  import Console from "./Console.svelte"
 
   // Not an island of its own: it renders inside Run.svelte's island because it reads the
   // same `project`. Two islands would mean two copies of that state and a way to keep them
   // in sync — a shared store for something that never leaves one screen.
-  let { project, written, busy }: {
+  let { project, written, busy, runId, readonly }: {
     project: Project | null
     /** Files the agent has written so far, while it is still writing. */
     written: Map<string, string | null>
     busy: boolean
+    /** The run this project belongs to: the download and the console both go through it. */
+    runId: string
+    /** A saved copy, not a live run: nothing can be executed or downloaded from the server. */
+    readonly: boolean
   } = $props()
+
+  let downloading = $state(false)
+  let downloadError = $state("")
+
+  /**
+   * The ZIP, fetched and saved from here rather than left to a plain link.
+   *
+   * A link that fails lands the person on a blank JSON page or saves a file that is not a ZIP;
+   * fetching first means the failure is a sentence next to the button, and the agent's own
+   * file name is kept.
+   */
+  async function download() {
+    if (!project || !runId || downloading) return
+    downloading = true
+    downloadError = ""
+    try {
+      const response = await fetch(run.downloadPath(runId))
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(
+          payload?.error?.code === "project_gone"
+            ? "El agente ya no tiene este proyecto (los guarda una hora). Lo que ves es una copia."
+            : (payload?.error?.message ?? `No se pudo descargar (HTTP ${response.status}).`),
+        )
+      }
+      const blob = await response.blob()
+      const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1]
+        ?? `${project.name}.zip`
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = name
+      document.body.append(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    } catch (error) {
+      downloadError = error instanceof Error ? error.message : "No se pudo descargar."
+    } finally {
+      downloading = false
+    }
+  }
 
   /**
    * What to draw: the certified project when there is one, otherwise what has arrived.
@@ -175,12 +223,13 @@
       <div class="title">
         <h2>{project.name}</h2>
         {#if project.download_url}
-          <a class="btn btn--primary dl" href={project.download_url} download>
+          <button class="btn btn--primary dl" type="button" onclick={download} disabled={downloading}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 11 5 5 5-5" /><path d="M5 21h14" /></svg>
-            <span>Descargar ZIP</span>
-          </a>
+            <span>{downloading ? "Descargando…" : "Descargar ZIP"}</span>
+          </button>
         {/if}
       </div>
+      {#if downloadError}<p class="dlerror" role="alert">{downloadError}</p>{/if}
 
       <!-- The badge travels with the sentence that explains it. On its own, "Pendiente de
            QA" is a label the reader has to guess at; UX-4 asks that it carry the weight of
@@ -264,6 +313,12 @@
         {/if}
       </div>
     </div>
+
+    <!-- Only for a finished project: it runs the CERTIFIED files, not the preview that is
+         still arriving, and a run that is still writing has nothing stable to run yet. -->
+    {#if project && runId}
+      <Console {runId} {project} live={!readonly} />
+    {/if}
   {:else}
     <!-- The header stays even with nothing in it, so the panel is identifiable before it
          has anything to show rather than being an unexplained empty half of the window. -->
@@ -318,6 +373,8 @@
   .dl { flex: none; display: inline-flex; align-items: center; gap: 0.45rem; text-decoration: none; padding: 0.45rem 0.85rem; font-size: 0.88rem; }
   .dl svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
   .nodl { margin: 0; font-size: 0.82rem; color: var(--pending); }
+  .dlerror { margin: 0; font-size: 0.82rem; color: var(--bad); }
+  .dl:disabled { opacity: 0.6; cursor: progress; }
 
   .stats { display: flex; gap: 1.6rem; margin: 0.15rem 0 0; }
   .stats div { display: flex; flex-direction: column-reverse; }
@@ -406,26 +463,26 @@
      generated file is made of, and it keeps the panel looking like the rest of the product
      instead of like a pasted-in editor theme. */
   .prose :global(.hljs-comment), .code :global(.hljs-comment),
-  .prose :global(.hljs-quote), .code :global(.hljs-quote) { color: #6b7280; font-style: italic; }
+  .prose :global(.hljs-quote), .code :global(.hljs-quote) { color: var(--hl-comment); font-style: italic; }
   .prose :global(.hljs-keyword), .code :global(.hljs-keyword),
   .prose :global(.hljs-literal), .code :global(.hljs-literal),
-  .prose :global(.hljs-selector-tag), .code :global(.hljs-selector-tag) { color: #c792ea; }
+  .prose :global(.hljs-selector-tag), .code :global(.hljs-selector-tag) { color: var(--hl-keyword); }
   .prose :global(.hljs-string), .code :global(.hljs-string),
-  .prose :global(.hljs-meta .hljs-string), .code :global(.hljs-meta .hljs-string) { color: var(--accent); }
-  .prose :global(.hljs-number), .code :global(.hljs-number) { color: var(--pending); }
+  .prose :global(.hljs-meta .hljs-string), .code :global(.hljs-meta .hljs-string) { color: var(--hl-string); }
+  .prose :global(.hljs-number), .code :global(.hljs-number) { color: var(--hl-number); }
   .prose :global(.hljs-title), .code :global(.hljs-title),
-  .prose :global(.hljs-title.function_), .code :global(.hljs-title.function_) { color: #82aaff; }
+  .prose :global(.hljs-title.function_), .code :global(.hljs-title.function_) { color: var(--hl-title); }
   .prose :global(.hljs-title.class_), .code :global(.hljs-title.class_),
   .prose :global(.hljs-type), .code :global(.hljs-type),
-  .prose :global(.hljs-built_in), .code :global(.hljs-built_in) { color: #ffcb6b; }
+  .prose :global(.hljs-built_in), .code :global(.hljs-built_in) { color: var(--hl-type); }
   .prose :global(.hljs-attr), .code :global(.hljs-attr),
   .prose :global(.hljs-attribute), .code :global(.hljs-attribute),
   .prose :global(.hljs-variable), .code :global(.hljs-variable),
-  .prose :global(.hljs-template-variable), .code :global(.hljs-template-variable) { color: #f78c6c; }
+  .prose :global(.hljs-template-variable), .code :global(.hljs-template-variable) { color: var(--hl-attr); }
   .prose :global(.hljs-meta), .code :global(.hljs-meta),
   .prose :global(.hljs-section), .code :global(.hljs-section),
   .prose :global(.hljs-symbol), .code :global(.hljs-symbol),
-  .prose :global(.hljs-bullet), .code :global(.hljs-bullet) { color: #89ddff; }
+  .prose :global(.hljs-bullet), .code :global(.hljs-bullet) { color: var(--hl-meta); }
   .prose :global(.hljs-deletion), .code :global(.hljs-deletion) { color: var(--bad); }
   .prose :global(.hljs-emphasis) { font-style: italic; }
   .prose :global(.hljs-strong) { font-weight: 700; }

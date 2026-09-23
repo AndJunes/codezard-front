@@ -6,6 +6,7 @@
   import type { Run, RunState } from "../../lib/flow/run"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
+  import * as history from "../../lib/project/history"
   import { messageId, type Message } from "../../lib/chat/messages"
   import type { Answer, Plan, Questionnaire } from "../../lib/plan/schema"
   import Files from "./Files.svelte"
@@ -32,6 +33,17 @@
   let draft = $state("")
   let busy = $state(false)
   let project = $state<Project | null>(null)
+  /**
+   * What is on screen is the browser's saved copy, not a live run.
+   *
+   * Set when the server cannot give a project back — it forgot it (the gateway keeps runs an
+   * hour, in memory) or it is unreachable — and the copy in `history` is shown instead. Nothing
+   * can be decided from a copy: it cannot type, approve or generate, because the server would
+   * have no run to apply any of it to.
+   */
+  let readonly = $state(false)
+  /** The last run the server sent, for the snapshot. Not reactive: nothing draws from it. */
+  let lastRun: Run | null = null
   /**
    * Files seen so far, while they are being written. Empty once `project` arrives.
    *
@@ -82,7 +94,32 @@
     try {
       previous = localStorage.getItem(STORED_RUN) ?? ""
     } catch {}
-    if (previous) void resume(previous)
+    if (previous) void load(previous)
+
+    // The sidebar is plain HTML with no access to this state, so it asks by event. Both are
+    // refused while a request is in flight: this island holds ONE run's worth of state, and
+    // switching under a request would let its answer land in somebody else's transcript.
+    const onNew = () => {
+      if (!busy) restart()
+    }
+    const onOpen = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail
+      if (id && id !== runId && !busy) void load(id, true)
+    }
+    window.addEventListener("cz:new", onNew)
+    window.addEventListener("cz:open", onOpen)
+    return () => {
+      window.removeEventListener("cz:new", onNew)
+      window.removeEventListener("cz:open", onOpen)
+    }
+  })
+
+  // The sidebar's own scripts read these two to highlight the open project and to grey out
+  // "new" and "open" while something is running.
+  $effect(() => {
+    const root = document.documentElement
+    root.dataset.busy = busy ? "yes" : "no"
+    root.dataset.run = runId
   })
 
   $effect(() => {
@@ -162,7 +199,9 @@
   ] as const
   const stage = $derived(STAGES.findIndex((s) => (s.states as readonly string[]).includes(state)))
 
-  const canType = $derived((state === "IDEA" || state === "PLAN_REVIEW") && !pending && !busy)
+  const canType = $derived(
+    (state === "IDEA" || state === "PLAN_REVIEW") && !pending && !busy && !readonly,
+  )
   /**
    * The PM is mid-request: no partial text exists to show, only that it is working.
    *
@@ -173,11 +212,13 @@
    */
   const thinking = $derived(busy && (state === "PM_ANALYSIS" || state === "PM_REVISION"))
   const hint = $derived(
-    state === "IDEA"
-      ? "Contá qué querés construir…"
-      : state === "PLAN_REVIEW"
-        ? "Pedí cambios con tus palabras, o aceptá el plan…"
-        : (HINTS[state] ?? ""),
+    readonly
+      ? "Copia guardada · solo lectura"
+      : state === "IDEA"
+        ? "Contá qué querés construir…"
+        : state === "PLAN_REVIEW"
+          ? "Pedí cambios con tus palabras, o aceptá el plan…"
+          : (HINTS[state] ?? ""),
   )
 
   function say(message: Message) {
@@ -203,20 +244,65 @@
    * the run had moved on in another tab — nothing noticed.
    */
   function show(next: Run) {
+    lastRun = next
     runId = next.runId
     state = next.state
     pending = next.questionnaire?.questions?.length ? next.questionnaire : null
     remember(next.runId)
+    persist(next)
   }
 
   const STORED_RUN = "cz:run"
 
-  /** The id, so a reload has something to ask about. Nothing else is kept here. */
+  /** The id of the open project, so a reload has something to ask about. */
   function remember(id: string): void {
     try {
       if (id) localStorage.setItem(STORED_RUN, id)
       else localStorage.removeItem(STORED_RUN)
     } catch {}
+  }
+
+  /**
+   * Keep what the screen is showing, so the project outlives the server's memory of it.
+   *
+   * Called from `show`, which is the one place the server's answer lands — so every state
+   * worth going back to is saved without a second list of "when to save" to keep in step.
+   * The index is cheap; the snapshot carries file text and is only written once there is
+   * something to read.
+   */
+  function persist(next: Run): void {
+    history.upsert({
+      id: next.runId,
+      title: history.clip(next.idea),
+      name: project?.name ?? "",
+      state: next.state,
+      gone: false,
+    })
+    // A finished run is redrawn in two steps — the run first, its project after the event
+    // replay. Saving in between would replace a copy that HAS the project with one that does
+    // not, and if the replay then failed, the project would be gone from both places.
+    const settled = next.state === "ZIP_READY" || next.state === "FAILED" ||
+      next.state === "BACKEND_GENERATION"
+    if (settled && !project && history.loadSnapshot(next.runId)?.project) return
+    const steps = messages.filter((m) => m.kind === "steps").at(-1) as
+      Extract<Message, { kind: "steps" }> | undefined
+    history.saveSnapshot(next.runId, {
+      run: next,
+      project: project ? $state.snapshot(project) as Project : null,
+      steps: steps ? [...steps.steps] : [],
+      ms: steps?.ms ?? 0,
+    })
+  }
+
+  /** The conversation as the run recorded it: idea, summary, answers and plan. */
+  function replay(next: Run): void {
+    if (next.idea) say({ id: messageId(), from: "user", kind: "text", text: next.idea })
+    if (next.summary) say(agent(next.summary))
+    for (const answer of next.answers) {
+      say({ id: messageId(), from: "user", kind: "answers",
+            pairs: [{ question: answer.questionId, answer: answer.value }] })
+    }
+    if (next.plan) say({ id: messageId(), from: "agent", kind: "plan", plan: next.plan })
   }
 
   /**
@@ -226,27 +312,91 @@
    * idea, the summary, the questionnaire and the plan all live on the server, which is what
    * moving the orchestration bought. A refresh mid-generation used to lose the conversation
    * while the work carried on with nobody able to watch it.
+   *
+   * When the server cannot answer, `fallback` decides what is left. What this no longer does
+   * is forget the id: it used to `remember("")` on ANY failure, so the gateway being down for
+   * the length of a reload took the project out of the browser as well.
    */
   async function resume(id: string): Promise<void> {
     let next: Run
     try {
       next = await run.read(id)
-    } catch {
-      remember("")  // expired, or from a server that has restarted since
+    } catch (e) {
+      fallback(id, e)
       return
     }
-    if (next.idea) say({ id: messageId(), from: "user", kind: "text", text: next.idea })
-    if (next.summary) say(agent(next.summary))
-    for (const answer of next.answers) {
-      say({ id: messageId(), from: "user", kind: "answers",
-            pairs: [{ question: answer.questionId, answer: answer.value }] })
-    }
-    if (next.plan) say({ id: messageId(), from: "agent", kind: "plan", plan: next.plan })
+    replay(next)
     show(next)
 
     if (next.state === "BACKEND_GENERATION" || next.state === "ZIP_READY" ||
         next.state === "FAILED") {
       await watch(() => run.follow(id), id)
+    }
+  }
+
+  /**
+   * The server could not give the run back. Those are two different situations and they used
+   * to be one: it FORGOT it (404 — a restart, or the hour it keeps runs for), or it could not
+   * be REACHED. The first is permanent and the second is not, so only the first is recorded
+   * as gone; both show the browser's copy when there is one.
+   */
+  function fallback(id: string, error: unknown): void {
+    const forgotten = error instanceof run.RunError && error.status === 404
+    if (forgotten) history.markGone(id)
+    const copy = history.loadSnapshot(id)
+    if (copy) {
+      restore(id, copy, forgotten)
+      return
+    }
+    if (forgotten) {
+      remember("")
+      say(agent("Este proyecto ya no está en el servidor: se guarda una hora y solo en memoria, " +
+                "y no llegó a guardarse una copia en este navegador."))
+    } else {
+      say({ id: messageId(), from: "agent", kind: "error",
+            text: "No pude conectar con el servidor. El proyecto sigue guardado en este " +
+                  "navegador: probá de nuevo en un momento." })
+    }
+  }
+
+  /** Draw a saved copy. Read-only: there is no run on the server for anything to act on. */
+  function restore(id: string, copy: history.Snapshot, forgotten: boolean): void {
+    readonly = true
+    replay(copy.run)
+    if (copy.steps.length) {
+      say({ id: messageId(), from: "agent", kind: "steps", steps: copy.steps, running: false, ms: copy.ms })
+    }
+    lastRun = copy.run
+    runId = id
+    state = copy.run.state
+    pending = null
+    project = copy.project
+    if (copy.project) say({ id: messageId(), from: "agent", kind: "project", project: copy.project })
+    remember(id)
+    const midway = copy.run.state === "BACKEND_GENERATION" && !copy.project
+      ? " La generación estaba en curso cuando se guardó, así que puede estar incompleto."
+      : ""
+    say(agent(forgotten
+      ? "Este proyecto ya no está en el servidor (guarda cada proyecto una hora, en memoria). " +
+        "Lo que ves es la copia guardada en este navegador: se puede leer, no continuar." + midway
+      : "No pude conectar con el servidor, así que te muestro la copia guardada en este " +
+        "navegador. Cuando vuelva, recargá la página para retomarlo." + midway))
+  }
+
+  /**
+   * Open a project: on load, from the sidebar, or the one the page was left on.
+   *
+   * `busy` covers the wait, so the composer cannot take a new idea while the old project is
+   * still being fetched into the same transcript.
+   */
+  async function load(id: string, fresh = false): Promise<void> {
+    if (fresh) reset()
+    remember(id)
+    busy = true
+    try {
+      await resume(id)
+    } finally {
+      busy = false
     }
   }
 
@@ -423,7 +573,8 @@
     if (isDone(event)) project = event.project
   }
 
-  function restart() {
+  /** Back to a blank screen. The saved projects are NOT touched: they are what "open" reads. */
+  function reset() {
     state = "IDEA"
     runId = ""
     messages = []
@@ -431,6 +582,12 @@
     draft = ""
     project = null
     written.clear()
+    readonly = false
+    lastRun = null
+  }
+
+  function restart() {
+    reset()
     remember("")
   }
 
@@ -510,7 +667,7 @@
             {:else if message.kind === "plan"}
               <PlanCard
                 plan={message.plan}
-                active={message.plan === plan && state === "PLAN_REVIEW"}
+                active={message.plan === plan && state === "PLAN_REVIEW" && !readonly}
                 {busy}
                 onapprove={approve}
                 onreject={askForChanges}
@@ -550,7 +707,7 @@
         <p class="versions">Versiones: {planMessages.map((m) => `v${m.plan.version}`).join(" → ")}</p>
       {/if}
 
-      {#if state === "PLAN_APPROVED"}
+      {#if state === "PLAN_APPROVED" && !readonly}
         <div class="turn cta">
           <button class="btn btn--primary" onclick={generate} disabled={busy}>Generar el proyecto</button>
         </div>
@@ -602,7 +759,7 @@
   <!-- `generating`, not `busy`. The panel used to say "the agent is writing the files" while
        the PM was still reading the idea, because `busy` is true for every call the island
        makes. It is only true here when the backend agent is actually producing something. -->
-  <Files {project} {written} busy={state === "BACKEND_GENERATION"} />
+  <Files {project} {written} {runId} {readonly} busy={state === "BACKEND_GENERATION"} />
 </div>
 
 <style>

@@ -2,25 +2,22 @@
 import Icon from "./Icon.astro"
 
 /**
- * The navigation from the Elysium design: New Chat, Explore, Categories, Library,
- * Settings, the chat list, and the avatar/bell/theme row at the bottom.
+ * The navigation from the Elysium design: New project, Explore, Categories, Library,
+ * Settings, the project list, and the avatar/bell/theme row at the bottom.
  *
  * Labels are in Spanish because the rest of the interface is; the mockup is an English
  * comp, not a copy deck.
+ *
+ * Only what has something behind it is a working button. "Explorar", "Categorías" and the
+ * bell are in the comp but nothing in this product answers them yet, so they say so ("Pronto")
+ * instead of being buttons that do nothing — which is the state every button here was in.
  */
 const nav = [
-  { label: "Explorar", icon: "search" },
-  { label: "Categorías", icon: "grid" },
-  { label: "Biblioteca", icon: "folder", count: 0 },
-  { label: "Ajustes", icon: "settings" },
+  { label: "Explorar", icon: "search", soon: true },
+  { label: "Categorías", icon: "grid", soon: true },
+  { label: "Biblioteca", icon: "folder", id: "nav-library" },
+  { label: "Ajustes", icon: "settings", id: "nav-settings" },
 ] as const
-
-/**
- * Empty on purpose. The design shows a chat history, but nothing is persisted between
- * runs yet (TC-5/DR-4 forbid it in the MVP), so the section renders its empty state
- * rather than a list of invented conversations.
- */
-const chats: { title: string; active: boolean }[] = []
 ---
 <aside class="sidebar" id="sidebar">
   <div class="top">
@@ -37,34 +34,38 @@ const chats: { title: string; active: boolean }[] = []
     </button>
   </div>
 
-  <button class="new" type="button">
+  <button class="new" id="new-project" type="button">
     <Icon name="plus" size={18} />
     <span class="label">Nuevo proyecto</span>
   </button>
 
   <nav aria-label="Principal">
     {nav.map((item) => (
-      <button class="item" type="button" title={item.label}>
-        <Icon name={item.icon} />
-        <span class="label">{item.label}</span>
-        {/* The comp shows a "141" pill. Shown only when there is something to count:
-            a hard-coded number would be the interface telling its first lie. */}
-        {"count" in item && item.count > 0 && <span class="count">{item.count}</span>}
-      </button>
+      "soon" in item ? (
+        <button class="item item--soon" type="button" aria-disabled="true" title={`${item.label}: todavía no existe`}>
+          <Icon name={item.icon} />
+          <span class="label">{item.label}</span>
+          <span class="soon label">Pronto</span>
+        </button>
+      ) : (
+        <button class="item" id={item.id} type="button" title={item.label}>
+          <Icon name={item.icon} />
+          <span class="label">{item.label}</span>
+          {/* The comp shows a "141" pill. This one counts the projects saved in this
+              browser and stays hidden at zero: a hard-coded number would be the interface
+              telling its first lie. */}
+          {item.id === "nav-library" && <span class="count" id="library-count" hidden></span>}
+        </button>
+      )
     ))}
   </nav>
 
   <section class="chats" aria-label="Proyectos">
-    <h2>Proyectos</h2>
-    {chats.length === 0 ? (
-      <p class="empty">Todavía no hay ninguno. Los de esta sesión aparecen acá.</p>
-    ) : (
-      <ul>
-        {chats.map((c) => (
-          <li><button class:list={["chat", c.active && "chat--active"]} type="button">{c.title}</button></li>
-        ))}
-      </ul>
-    )}
+    <h2 id="projects-heading" tabindex="-1">Proyectos</h2>
+    <p class="empty" id="project-empty">
+      Todavía no hay ninguno. Los que armes quedan guardados en este navegador.
+    </p>
+    <ul id="project-list"></ul>
   </section>
 
   <footer class="bottom">
@@ -73,36 +74,275 @@ const chats: { title: string; active: boolean }[] = []
       <strong>Invitada</strong>
       <small>Sesión local</small>
     </span>
-    <button class="ghost" type="button" title="Notificaciones">
-      <Icon name="bell" size={18} /><span class="sr-only">Notificaciones</span>
+    <button class="ghost ghost--soon" type="button" aria-disabled="true" title="Notificaciones: todavía no existen">
+      <Icon name="bell" size={18} /><span class="sr-only">Notificaciones (todavía no existen)</span>
     </button>
-    <button class="ghost" type="button" title="Tema">
-      <Icon name="sun" size={18} /><span class="sr-only">Cambiar el tema</span>
+    <button class="ghost" id="theme-toggle" type="button">
+      <span class="i-sun"><Icon name="sun" size={18} /></span>
+      <span class="i-moon"><Icon name="moon" size={18} /></span>
+      <span class="sr-only" id="theme-label">Cambiar el tema</span>
     </button>
   </footer>
 </aside>
 
+<dialog class="settings" id="settings" aria-labelledby="settings-title">
+  <form method="dialog">
+    <header>
+      <h2 id="settings-title">Ajustes</h2>
+      <button class="ghost" value="close" aria-label="Cerrar los ajustes"><Icon name="x" size={18} /></button>
+    </header>
+
+    <fieldset>
+      <legend>Tema</legend>
+      <label><input type="radio" name="theme" value="dark" /> Oscuro</label>
+      <label><input type="radio" name="theme" value="light" /> Claro</label>
+      <label><input type="radio" name="theme" value="system" /> Según el sistema</label>
+    </fieldset>
+
+    <section class="stored">
+      <h3>Proyectos guardados</h3>
+      <p id="stored-note"></p>
+      <button type="button" class="danger" id="stored-clear">Borrar todos</button>
+    </section>
+  </form>
+</dialog>
+
 <script>
+  import { CHANGED, clear, list, remove, type Saved } from "../lib/project/history"
+
+  const root = document.documentElement
+  const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null
+
   /**
    * Collapse state lives on <html> rather than on the sidebar so the CSS can react before
    * this script runs — index.astro sets the same attribute inline in <head>, which is what
    * keeps a collapsed sidebar from flashing open on every page load.
    */
-  const root = document.documentElement
-  const toggle = document.getElementById("sidebar-toggle")
+  const toggle = byId("sidebar-toggle")
 
-  toggle?.addEventListener("click", () => {
-    const collapsed = root.dataset.sidebar !== "collapsed"
-    root.dataset.sidebar = collapsed ? "collapsed" : "expanded"
-    toggle.setAttribute("aria-expanded", String(!collapsed))
+  function setSidebar(mode: "collapsed" | "expanded") {
+    root.dataset.sidebar = mode
+    toggle?.setAttribute("aria-expanded", String(mode === "expanded"))
     // Wrapped: storage throws in private mode, and a thrown error here would leave the
     // sidebar working but the button dead for the rest of the session.
     try {
-      localStorage.setItem("cz:sidebar", root.dataset.sidebar)
+      localStorage.setItem("cz:sidebar", mode)
     } catch {}
+  }
+
+  toggle?.addEventListener("click", () =>
+    setSidebar(root.dataset.sidebar === "collapsed" ? "expanded" : "collapsed"))
+  toggle?.setAttribute("aria-expanded", String(root.dataset.sidebar !== "collapsed"))
+
+  /** On a phone the open sidebar floats over the page: picking something should close it. */
+  const closeIfFloating = () => {
+    if (matchMedia("(max-width: 860px)").matches) setSidebar("collapsed")
+  }
+
+  // ── projects ───────────────────────────────────────────────────────────────────────────
+  // The island owns the run and knows nothing of this list, and this list has no access to
+  // the run. They talk by two events out (`cz:new`, `cz:open`) and two attributes in
+  // (`data-run`, `data-busy`), which is all either needs to know about the other.
+
+  const isBusy = () => root.dataset.busy === "yes"
+  const BUSY_TITLE = "Esperá a que termine lo que está en curso"
+
+  const STATE_LABEL: Record<string, string> = {
+    IDEA: "Idea", PM_ANALYSIS: "Idea", QUESTIONNAIRE: "Idea",
+    PLAN_REVIEW: "Plan", PLAN_REJECTED: "Plan", PM_REVISION: "Plan",
+    PLAN_APPROVED: "Plan aprobado", BACKEND_GENERATION: "Generando",
+    ZIP_READY: "Listo", FAILED: "Fallido",
+  }
+  const labelOf = (entry: Saved) =>
+    entry.gone ? "Solo copia guardada" : (STATE_LABEL[entry.state] ?? "")
+
+  const newButton = byId<HTMLButtonElement>("new-project")
+  const listBox = byId<HTMLUListElement>("project-list")
+  const emptyNote = byId("project-empty")
+  const libraryCount = byId("library-count")
+
+  function render() {
+    if (!listBox || !emptyNote) return
+    const entries = list()
+    const current = root.dataset.run ?? ""
+    const busy = isBusy()
+
+    listBox.replaceChildren()
+    emptyNote.hidden = entries.length > 0
+    if (libraryCount) {
+      libraryCount.textContent = String(entries.length)
+      libraryCount.hidden = entries.length === 0
+    }
+    newButton?.setAttribute("aria-disabled", String(busy))
+    if (newButton) newButton.title = busy ? BUSY_TITLE : ""
+
+    for (const entry of entries) {
+      const active = entry.id === current
+      const row = document.createElement("li")
+      row.className = "entry"
+
+      const open = document.createElement("button")
+      open.type = "button"
+      open.className = active ? "chat chat--active" : "chat"
+      open.dataset.open = entry.id
+      if (active) open.setAttribute("aria-current", "true")
+      // Busy greys out every OTHER project: the open one is what is running, and it is
+      // already on screen.
+      const blocked = busy && !active
+      open.setAttribute("aria-disabled", String(blocked))
+      const name = entry.name || entry.title || "Sin título"
+      open.title = blocked ? BUSY_TITLE : entry.name ? `${entry.name} — ${entry.title}` : name
+
+      const label = document.createElement("span")
+      label.className = "chat__name"
+      label.textContent = name
+      const meta = document.createElement("span")
+      meta.className = entry.gone ? "chat__meta chat__meta--gone" : "chat__meta"
+      meta.textContent = labelOf(entry)
+      open.append(label, meta)
+
+      const del = document.createElement("button")
+      del.type = "button"
+      del.className = "del"
+      del.dataset.remove = entry.id
+      del.textContent = "×"
+      del.title = "Quitar de la lista"
+      del.setAttribute("aria-label", `Quitar «${name}» de la lista`)
+      del.setAttribute("aria-disabled", String(busy && active))
+
+      row.append(open, del)
+      listBox.append(row)
+    }
+  }
+
+  listBox?.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement
+    const openId = target.closest<HTMLElement>("[data-open]")?.dataset.open
+    const removeId = target.closest<HTMLElement>("[data-remove]")?.dataset.remove
+    if (openId) {
+      if (isBusy() && openId !== root.dataset.run) return
+      if (openId === root.dataset.run) return closeIfFloating()
+      window.dispatchEvent(new CustomEvent("cz:open", { detail: openId }))
+      closeIfFloating()
+    } else if (removeId) {
+      const openNow = removeId === root.dataset.run
+      if (openNow && isBusy()) return
+      remove(removeId)
+      // Removing the project on screen clears the screen too, or the next answer from the
+      // server would quietly save it again.
+      if (openNow) window.dispatchEvent(new CustomEvent("cz:new"))
+    }
   })
 
-  toggle?.setAttribute("aria-expanded", String(root.dataset.sidebar !== "collapsed"))
+  newButton?.addEventListener("click", () => {
+    if (isBusy()) return
+    window.dispatchEvent(new CustomEvent("cz:new"))
+    closeIfFloating()
+  })
+
+  // Re-render on anything that could change what the list says: a save in this tab or
+  // another one, the island opening or finishing a project, or a request starting.
+  window.addEventListener(CHANGED, render)
+  window.addEventListener("storage", render)
+  new MutationObserver(render).observe(root, { attributes: true, attributeFilter: ["data-run", "data-busy"] })
+  render()
+
+  byId("nav-library")?.addEventListener("click", () => {
+    if (root.dataset.sidebar === "collapsed") setSidebar("expanded")
+    const first = listBox?.querySelector<HTMLElement>(".chat")
+    ;(first ?? byId("projects-heading"))?.focus()
+    byId("projects-heading")?.scrollIntoView({ block: "nearest" })
+  })
+
+  // ── theme ──────────────────────────────────────────────────────────────────────────────
+  type Preference = "dark" | "light" | "system"
+  const light = matchMedia("(prefers-color-scheme: light)")
+
+  const preference = (): Preference => {
+    try {
+      const stored = localStorage.getItem("cz:theme")
+      return stored === "light" || stored === "system" ? stored : "dark"
+    } catch {
+      return "dark"
+    }
+  }
+
+  function applyTheme(next: Preference, save = true) {
+    root.dataset.theme = next === "system" ? (light.matches ? "light" : "dark") : next
+    if (save) {
+      try {
+        localStorage.setItem("cz:theme", next)
+      } catch {}
+    }
+    const label = byId("theme-label")
+    if (label) label.textContent = root.dataset.theme === "light" ? "Cambiar al tema oscuro" : "Cambiar al tema claro"
+    for (const radio of document.querySelectorAll<HTMLInputElement>('#settings input[name="theme"]')) {
+      radio.checked = radio.value === next
+    }
+  }
+
+  // "Según el sistema" has to follow the system while the page is open, not only at load.
+  light.addEventListener("change", () => {
+    if (preference() === "system") applyTheme("system", false)
+  })
+
+  byId("theme-toggle")?.addEventListener("click", () =>
+    applyTheme(root.dataset.theme === "light" ? "dark" : "light"))
+  applyTheme(preference(), false)
+
+  // ── settings ───────────────────────────────────────────────────────────────────────────
+  const settings = byId<HTMLDialogElement>("settings")
+  const clearButton = byId<HTMLButtonElement>("stored-clear")
+  const storedNote = byId("stored-note")
+  let disarm: ReturnType<typeof setTimeout> | undefined
+
+  function describeStored() {
+    const n = list().length
+    if (storedNote) {
+      storedNote.textContent = n === 0
+        ? "No hay proyectos guardados en este navegador."
+        : `${n} ${n === 1 ? "proyecto guardado" : "proyectos guardados"} en este navegador: el nombre y una ` +
+          "copia para poder leerlos aunque el servidor ya no los tenga. No se envía a ningún lado."
+    }
+    if (clearButton) {
+      clearButton.disabled = n === 0
+      clearButton.textContent = "Borrar todos"
+      delete clearButton.dataset.armed
+    }
+  }
+
+  byId("nav-settings")?.addEventListener("click", () => {
+    describeStored()
+    applyTheme(preference(), false)
+    settings?.showModal()
+    closeIfFloating()
+  })
+
+  for (const radio of document.querySelectorAll<HTMLInputElement>('#settings input[name="theme"]')) {
+    radio.addEventListener("change", () => applyTheme(radio.value as Preference))
+  }
+
+  // Two clicks, not a confirm(): a browser dialog is a poor thing to hang the only
+  // destructive button on, and it cannot be styled or read like the rest of the page.
+  clearButton?.addEventListener("click", () => {
+    if (!clearButton.dataset.armed) {
+      clearButton.dataset.armed = "yes"
+      clearButton.textContent = "¿Seguro? Tocá de nuevo para borrar"
+      clearTimeout(disarm)
+      disarm = setTimeout(describeStored, 4000)
+      return
+    }
+    clearTimeout(disarm)
+    const openNow = root.dataset.run
+    clear()
+    if (openNow && !isBusy()) window.dispatchEvent(new CustomEvent("cz:new"))
+    describeStored()
+  })
+
+  // A click on the backdrop closes it: the dialog element itself is the target only there.
+  settings?.addEventListener("click", (event) => {
+    if (event.target === settings) settings.close()
+  })
 </script>
 
 <style>
@@ -136,6 +376,10 @@ const chats: { title: string; active: boolean }[] = []
   }
   .toggle:hover, .ghost:hover { background: var(--surface-2); color: var(--text); }
   .ghost { margin-left: 0; }
+  /* Kept this weak on purpose: the theme rules further down hide one of the two icons with
+     `display: none`, and a broader selector here (`.ghost span:not(.sr-only)`) outweighed
+     them, so both icons were always drawn, one on top of the other. */
+  .i-sun, .i-moon { display: grid; place-items: center; }
 
   .new {
     display: flex; align-items: center; gap: 0.6rem;
@@ -145,6 +389,11 @@ const chats: { title: string; active: boolean }[] = []
     font-weight: 600;
   }
   .new:hover { filter: brightness(1.06); }
+
+  /* Not `disabled`: a disabled button leaves the tab order and swallows its own tooltip, and
+     the tooltip is the whole explanation. The click handlers check the same attribute. */
+  [aria-disabled="true"] { cursor: not-allowed; }
+  .new[aria-disabled="true"] { opacity: 0.5; filter: none; }
 
   nav { display: flex; flex-direction: column; gap: 0.15rem; }
   .item {
@@ -156,26 +405,57 @@ const chats: { title: string; active: boolean }[] = []
     text-align: left;
   }
   .item:hover { background: var(--surface-2); color: var(--text); }
+  .item--soon { cursor: default; opacity: 0.6; }
+  .item--soon:hover { background: none; color: var(--text-dim); }
+  .ghost--soon { cursor: default; opacity: 0.45; }
+  .ghost--soon:hover { background: none; color: var(--text-dim); }
+  .soon {
+    margin-left: auto;
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 0.05rem 0.45rem; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--text-dim);
+  }
   .count {
     margin-left: auto;
     font-size: 0.75rem; font-weight: 600;
     padding: 0.05rem 0.45rem; border-radius: 999px;
     background: var(--surface-2); color: var(--text-dim);
   }
+  .count[hidden] { display: none; }
 
   .chats { min-height: 0; overflow-y: auto; padding: 0 0.25rem; }
   .chats h2 { margin: 0 0 0.5rem; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+  .chats h2:focus { outline: none; }
   .chats ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.1rem; }
   .empty { margin: 0; font-size: 0.8rem; color: var(--text-dim); line-height: 1.45; }
-  .chat {
-    width: 100%; text-align: left;
-    padding: 0.45rem 0.55rem;
+  .empty[hidden] { display: none; }
+
+  /* The rows are built by the script below, so Svelte-style scoping does not reach them:
+     `:global` on the elements it creates, nested under the list so it cannot leak. */
+  .chats :global(.entry) { position: relative; display: flex; align-items: stretch; }
+  .chats :global(.chat) {
+    flex: 1; min-width: 0; text-align: left;
+    display: flex; flex-direction: column; gap: 0.05rem;
+    padding: 0.45rem 1.6rem 0.45rem 0.55rem;
     border: 0; border-left: 2px solid transparent; border-radius: 8px;
     background: none; color: var(--text-dim);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .chat:hover { background: var(--surface-2); color: var(--text); }
-  .chat--active { border-left-color: var(--accent); color: var(--text); background: var(--surface-2); }
+  .chats :global(.chat:hover) { background: var(--surface-2); color: var(--text); }
+  .chats :global(.chat--active) { border-left-color: var(--accent); color: var(--text); background: var(--surface-2); }
+  .chats :global(.chat[aria-disabled="true"]) { opacity: 0.5; }
+  .chats :global(.chat__name) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.88rem; }
+  .chats :global(.chat__meta) { font-size: 0.7rem; color: var(--text-dim); letter-spacing: 0.02em; }
+  .chats :global(.chat__meta--gone) { color: var(--pending); }
+  .chats :global(.del) {
+    position: absolute; right: 0.25rem; top: 50%; transform: translateY(-50%);
+    width: 22px; height: 22px; display: grid; place-items: center;
+    border: 0; border-radius: 6px; background: none; color: var(--text-dim);
+    font-size: 1rem; line-height: 1; opacity: 0;
+  }
+  .chats :global(.entry:hover .del), .chats :global(.del:focus-visible) { opacity: 1; }
+  .chats :global(.del:hover) { background: var(--surface); color: var(--bad); }
+  .chats :global(.del[aria-disabled="true"]) { display: none; }
+  @media (hover: none) { .chats :global(.del) { opacity: 1; } }
 
   .bottom { margin-top: auto; display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.25rem 0; border-top: 1px solid var(--line); }
   .avatar { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 0.82rem; }
@@ -183,6 +463,10 @@ const chats: { title: string; active: boolean }[] = []
   .who strong { font-size: 0.85rem; font-weight: 600; }
   .who small { font-size: 0.72rem; color: var(--text-dim); }
   .who + .ghost { margin-left: auto; }
+
+  /* One icon per theme: the sun is what you press to get light, the moon to get dark. */
+  :global(:root[data-theme="light"]) .i-sun { display: none; }
+  :global(:root:not([data-theme="light"])) .i-moon { display: none; }
 
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
@@ -208,4 +492,31 @@ const chats: { title: string; active: boolean }[] = []
     .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; }
     :global(:root[data-sidebar="expanded"]) .sidebar { box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.5); }
   }
+
+  /* ── settings dialog ── */
+  .settings {
+    width: min(26rem, calc(100vw - 2rem));
+    padding: 0;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--surface); color: var(--text);
+  }
+  .settings::backdrop { background: rgb(0 0 0 / 0.55); }
+  .settings form { display: flex; flex-direction: column; gap: 1.1rem; padding: 1.1rem 1.25rem 1.25rem; }
+  .settings header { display: flex; align-items: center; justify-content: space-between; }
+  .settings h2 { margin: 0; font-size: 1.1rem; }
+  .settings h3 { margin: 0 0 0.35rem; font-size: 0.9rem; }
+  .settings fieldset { display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 0; border: 0; }
+  .settings legend { padding: 0; margin-bottom: 0.35rem; font-size: 0.9rem; font-weight: 600; }
+  .settings label { display: flex; align-items: center; gap: 0.55rem; font-size: 0.92rem; }
+  .settings input[type="radio"] { accent-color: var(--accent); }
+  .stored p { margin: 0 0 0.7rem; font-size: 0.82rem; color: var(--text-dim); line-height: 1.5; }
+  .danger {
+    align-self: flex-start;
+    border: 1px solid color-mix(in oklab, var(--bad) 55%, var(--line));
+    background: none; color: var(--bad);
+    border-radius: 999px; padding: 0.45rem 0.95rem; font-size: 0.86rem;
+  }
+  .danger:hover:not(:disabled) { background: color-mix(in oklab, var(--bad) 12%, transparent); }
+  .danger:disabled { opacity: 0.4; cursor: not-allowed; }
+  .danger[data-armed] { background: var(--bad); color: var(--bg); }
 </style>

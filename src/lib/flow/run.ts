@@ -97,6 +97,49 @@ export async function generate(runId: string): Promise<ReadableStream<Uint8Array
  */
 export const follow = (runId: string) => stream(`/api/run/${runId}/events`, "GET")
 
+/**
+ * The project's ZIP, through the run.
+ *
+ * The agent's own `download_url` is relative to the AGENT and its route wants a token the
+ * browser never holds, so a link built from it pointed at this page's origin and got a 404.
+ * The gateway knows which artifact a run produced and holds the token; the screen only names
+ * the run.
+ */
+export const downloadPath = (runId: string) => `/api/run/${runId}/download`
+
+/** What the console reports for one command. One `exit` ends it, unless an `error` did. */
+export type ConsoleEvent =
+  | { type: "start"; command: string }
+  | { type: "stdout" | "stderr"; text: string }
+  | { type: "exit"; code: number | null; ms: number; reason: "" | "stopped" | "timeout" | "output" }
+  | { type: "error"; message: string }
+
+/**
+ * Run a command in the run's project and read what it prints, as it prints it.
+ *
+ * Aborting `signal` is how a command is stopped — including a server that never exits: the
+ * request closes, the gateway closes the agent's connection, and the agent kills the process
+ * tree. There is no separate "kill" call to forget to make.
+ */
+export async function execute(runId: string, command: string, signal: AbortSignal):
+    Promise<ReadableStream<Uint8Array>> {
+  const response = await fetch(`/api/run/${runId}/console`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command }),
+    signal,
+  })
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({}))
+    throw new RunError(
+      payload?.error?.message ?? payload?.detail?.[0]?.msg ?? `HTTP ${response.status}`,
+      payload?.error?.code ?? "",
+      response.status,
+    )
+  }
+  return response.body
+}
+
 async function stream(path: string, method: string): Promise<ReadableStream<Uint8Array>> {
   const response = await fetch(path, {
     method,

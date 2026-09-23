@@ -26,6 +26,17 @@ export const prerender = false
       `is:inline` keeps Astro from bundling it into a deferred module.
     -->
     <script is:inline>
+      // The theme, resolved here for the same reason as everything below: a light page that
+      // paints dark first is a flash on every load. `data-theme` is always "dark" or
+      // "light"; "system" is a preference that is turned into one of those, and the default
+      // is dark because that is the design this app shipped with.
+      var theme = "dark"
+      try { theme = localStorage.getItem("cz:theme") || "dark" } catch {}
+      document.documentElement.dataset.theme =
+        theme === "light" || theme === "dark"
+          ? theme
+          : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
+
       var stored = null
       try { stored = localStorage.getItem("cz:sidebar") } catch {}
       // No stored choice: start as the icon rail on a narrow screen, open on a wide one.

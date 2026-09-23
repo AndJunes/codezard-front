@@ -39,6 +39,12 @@ export type Project = {
   zip: { name: string; bytes: number; sha256: string } | null
   integrity: { ok: boolean; reason: string }
   /**
+   * What the certifier did, in order: structure, syntax, imports, tests, the documented
+   * command, the CRUD probe. The agent has always sent it and nothing drew it, so "how did this
+   * run?" had no answer on screen.
+   */
+  phases?: { name: string; status: string; detail: string }[]
+  /**
    * Relative, and used verbatim.
    *
    * The agent's docs are explicit: "la URL siempre se toma de `project.download_url` en el
@@ -92,7 +98,11 @@ export const isDone = (event: AgentEvent): event is DoneEvent => event.type === 
  * A chunk can end mid-event, so the tail is kept for the next read; dropping it silently
  * loses whole events under load, which is the bug this shape exists to avoid.
  */
-export async function* readEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<AgentEvent> {
+export const readEvents = (body: ReadableStream<Uint8Array>): AsyncGenerator<AgentEvent> =>
+  readSse<AgentEvent>(body)
+
+/** The same framing for any event shape: the console speaks it too. */
+export async function* readSse<T>(body: ReadableStream<Uint8Array>): AsyncGenerator<T> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
@@ -106,7 +116,7 @@ export async function* readEvents(body: ReadableStream<Uint8Array>): AsyncGenera
     buffer = parts.pop() ?? ""
     for (const part of parts) {
       if (!part.startsWith("data: ")) continue
-      yield JSON.parse(part.slice(6)) as AgentEvent
+      yield JSON.parse(part.slice(6)) as T
     }
   }
 }

@@ -17,7 +17,7 @@ export const prerender = false
  *
  * The response body is handed straight back rather than read. Generation streams progress for
  * minutes, and anything that waits for the last byte turns that into a blank screen followed
- * by everything at once.
+ * by everything at once. The console and the ZIP go through the same pipe for the same reason.
  */
 const proxy: APIRoute = async ({ params, request }) => {
   const path = params.path ?? ""
@@ -43,15 +43,19 @@ const proxy: APIRoute = async ({ params, request }) => {
   }
 
   const type = response.headers.get("content-type") ?? "application/json"
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      "Content-Type": type,
-      // no-transform matters as much as no-cache: without it an intermediary is free to
-      // compress the stream, and compressing means buffering it first.
-      "Cache-Control": "no-cache, no-transform",
-    },
-  })
+  const headers: Record<string, string> = {
+    "Content-Type": type,
+    // no-transform matters as much as no-cache: without it an intermediary is free to
+    // compress the stream, and compressing means buffering it first.
+    "Cache-Control": "no-cache, no-transform",
+  }
+  // The ZIP's own name and checksum. Everything else stays behind: this pipe forwards what a
+  // screen needs and nothing the gateway or the agent happened to add.
+  for (const name of ["content-disposition", "content-length", "x-mirag-sha256"]) {
+    const value = response.headers.get(name)
+    if (value) headers[name] = value
+  }
+  return new Response(response.body, { status: response.status, headers })
 }
 
 export const GET = proxy
