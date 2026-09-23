@@ -22,6 +22,7 @@ const EXECUTION: Record<ExecutionStatus, Badge> = {
 }
 
 const PROJECT: Record<ProjectStatus, Badge> = {
+  INCOMPLETE: { label: "Incompleto", tone: "bad", detail: "Faltan archivos que el plano pedía. No se entrega: un proyecto al que le falta un módulo no es una versión menor de uno completo." },
   GENERATED: { label: "Pendiente de QA", tone: "pending", detail: "Hay archivos y nada se ha llegado a ejecutar." },
   VALIDATED: { label: "Pendiente de QA", tone: "pending", detail: "Pasó las comprobaciones estáticas; no se ejecutó." },
   EXECUTED: { label: "Ejecutado sin evidencia", tone: "pending", detail: "Corrió y no dejó marcadores de qué se probó." },
