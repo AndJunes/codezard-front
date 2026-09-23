@@ -11,13 +11,20 @@ import Icon from "./Icon.astro"
  * Only what has something behind it is a working button. "Explorar", "Categorías" and the
  * bell are in the comp but nothing in this product answers them yet, so they say so ("Pronto")
  * instead of being buttons that do nothing — which is the state every button here was in.
+ *
+ * "Créditos" is the one entry that is a LINK and not a button: it goes to another page, and a
+ * button that navigates breaks middle-click, ctrl-click and "open in new tab" for no reason.
+ * The rest open something on this page, which is what a button is for.
  */
 const nav = [
   { label: "Explorar", icon: "search", soon: true },
   { label: "Categorías", icon: "grid", soon: true },
   { label: "Biblioteca", icon: "folder", id: "nav-library" },
+  { label: "Créditos", icon: "dollar", href: "/billing" },
   { label: "Ajustes", icon: "settings", id: "nav-settings" },
 ] as const
+
+const here = Astro.url.pathname
 ---
 <aside class="sidebar" id="sidebar">
   <div class="top">
@@ -47,6 +54,16 @@ const nav = [
           <span class="label">{item.label}</span>
           <span class="soon label">Pronto</span>
         </button>
+      ) : "href" in item ? (
+        <a
+          class="item"
+          href={item.href}
+          title={item.label}
+          aria-current={here === item.href ? "page" : undefined}
+        >
+          <Icon name={item.icon} />
+          <span class="label">{item.label}</span>
+        </a>
       ) : (
         <button class="item" id={item.id} type="button" title={item.label}>
           <Icon name={item.icon} />
@@ -404,7 +421,13 @@ const nav = [
     background: none; color: var(--text-dim);
     text-align: left;
   }
+  /* `a.item` needs these two on top of the shared rule: a link brings an underline and its
+     own colour, and neither belongs on something drawn as a nav row. */
+  a.item { text-decoration: none; }
   .item:hover { background: var(--surface-2); color: var(--text); }
+  /* The page you are already on. `aria-current` rather than a class, so the marker and the
+     thing a screen reader announces are the same fact and cannot disagree. */
+  .item[aria-current="page"] { background: var(--surface-2); color: var(--text); }
   .item--soon { cursor: default; opacity: 0.6; }
   .item--soon:hover { background: none; color: var(--text-dim); }
   .ghost--soon { cursor: default; opacity: 0.45; }

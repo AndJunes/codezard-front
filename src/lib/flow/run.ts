@@ -1,3 +1,5 @@
+import { authorization, load } from "../billing/session"
+import type { PaymentRequired } from "../billing/types"
 import type { Plan, Questionnaire } from "../plan/schema"
 
 /**
@@ -36,33 +38,80 @@ export interface Run {
   maxRounds: number
   artifactId: string
   error: string
+  /**
+   * Who pays for this run. Empty on a gateway that is not charging, and then the whole
+   * billing half of this screen stays out of the way.
+   */
+  account: string
+  /** Tokens debited once it delivered. Zero until then, and on a run that never did. */
+  charged: number
 }
 
 /** The gateway's own message, not a generic one. Its errors say which agent and why. */
 export class RunError extends Error {
-  constructor(message: string, readonly code = "", readonly status = 0) {
+  constructor(
+    message: string,
+    readonly code = "",
+    readonly status = 0,
+    /**
+     * The 402 document, when this is a request for money rather than a failure.
+     *
+     * Carried rather than flattened into the message: it holds the price, the address and
+     * the memo, which is everything a screen needs to offer a way forward instead of a red
+     * box saying "HTTP 402".
+     */
+    readonly payment: PaymentRequired | null = null,
+  ) {
     super(message)
   }
+
+  /** Is the gateway asking to be paid, as opposed to something having gone wrong? */
+  get needsPayment(): boolean {
+    return this.status === 402
+  }
+}
+
+/** Headers for a call that spends money: the session, when there is one. */
+function headers(): Record<string, string> {
+  return { "Content-Type": "application/json", ...authorization(load()) }
+}
+
+function failure(status: number, payload: unknown): RunError {
+  // A 402 is the gateway quoting a price, in the shape an x402 client reads. It is not the
+  // house error envelope and must not be read as one.
+  const body = payload as {
+    error?: { message?: string; code?: string } | string
+    detail?: string
+    accepts?: unknown[]
+  } | null
+  if (status === 402 && body && Array.isArray(body.accepts)) {
+    const document = body as unknown as PaymentRequired
+    return new RunError(
+      document.error || "This run has to be paid for",
+      "payment_required",
+      402,
+      document,
+    )
+  }
+  // The 409 for "not approved yet" and the 502 carrying an agent's own words are both worth
+  // showing as they are; flattening them into "something went wrong" throws away the only
+  // sentence that says what to do next.
+  const error = typeof body?.error === "object" ? body.error : undefined
+  return new RunError(
+    error?.message ?? body?.detail ?? `HTTP ${status}`,
+    error?.code ?? "",
+    status,
+  )
 }
 
 async function call(path: string, method = "POST", body?: unknown): Promise<Run> {
   const response = await fetch(`/api/run${path}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: headers(),
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    // The 409 for "not approved yet" and the 502 carrying an agent's own words are both worth
-    // showing as they are; flattening them into "something went wrong" throws away the only
-    // sentence that says what to do next.
-    const error = payload?.error
-    throw new RunError(
-      error?.message ?? payload?.detail ?? `HTTP ${response.status}`,
-      error?.code ?? "",
-      response.status,
-    )
-  }
+  if (!response.ok) throw failure(response.status, payload)
   return payload as Run
 }
 
@@ -125,33 +174,20 @@ export async function execute(runId: string, command: string, signal: AbortSigna
     Promise<ReadableStream<Uint8Array>> {
   const response = await fetch(`/api/run/${runId}/console`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: headers(),
     body: JSON.stringify({ command }),
     signal,
   })
   if (!response.ok || !response.body) {
-    const payload = await response.json().catch(() => ({}))
-    throw new RunError(
-      payload?.error?.message ?? payload?.detail?.[0]?.msg ?? `HTTP ${response.status}`,
-      payload?.error?.code ?? "",
-      response.status,
-    )
+    throw failure(response.status, await response.json().catch(() => ({})))
   }
   return response.body
 }
 
 async function stream(path: string, method: string): Promise<ReadableStream<Uint8Array>> {
-  const response = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-  })
+  const response = await fetch(path, { method, headers: headers() })
   if (!response.ok || !response.body) {
-    const payload = await response.json().catch(() => ({}))
-    throw new RunError(
-      payload?.error?.message ?? `HTTP ${response.status}`,
-      payload?.error?.code ?? "",
-      response.status,
-    )
+    throw failure(response.status, await response.json().catch(() => ({})))
   }
   return response.body
 }

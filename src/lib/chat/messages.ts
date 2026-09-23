@@ -19,6 +19,21 @@ export type Message =
   | { id: string; from: "agent"; kind: "steps"; steps: string[]; running: boolean; ms: number }
   | { id: string; from: "agent"; kind: "project"; project: Project }
   | { id: string; from: "agent"; kind: "error"; text: string }
+  /**
+   * The gateway asking to be paid, which is not the same as something going wrong.
+   *
+   * Its own kind rather than an `error` with a nicer sentence, because the two need
+   * different endings: an error says what broke, and this says what it costs and where to
+   * go. Drawn in red with the rest, it would read as a failure the person caused.
+   */
+  | {
+      id: string
+      from: "agent"
+      kind: "paywall"
+      text: string
+      /** What one run costs, as the 402 quoted it. Empty when it could not be priced. */
+      price: string
+    }
 
 let counter = 0
 /** Stable keys for the `{#each}`. Nothing outside the transcript reads these. */

@@ -1,0 +1,89 @@
+---
+import Sidebar from "../components/Sidebar.astro"
+import Billing from "../components/islands/Billing.svelte"
+import "../styles/tokens.css"
+
+export const prerender = false
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeZard · Créditos</title>
+    <link rel="icon" href="/lizard-face-192.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/lizard-face-192.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Gantari:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <!--
+      The same pre-paint script as the home page, and for the same reason: a light page that
+      paints dark first is a flash on every load, and a collapsed sidebar that opens for one
+      frame is worse here than there, because this page is usually reached from that sidebar.
+
+      Duplicated rather than shared through a layout component, because it has to be inline
+      and run BEFORE anything else: an imported module would be deferred and would paint the
+      wrong thing first, which is exactly what it exists to prevent.
+    -->
+    <script is:inline>
+      var theme = "dark"
+      try {
+        theme = localStorage.getItem("cz:theme") || "dark"
+      } catch {}
+      document.documentElement.dataset.theme =
+        theme === "light" || theme === "dark"
+          ? theme
+          : matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark"
+
+      var stored = null
+      try {
+        stored = localStorage.getItem("cz:sidebar")
+      } catch {}
+      document.documentElement.dataset.sidebar =
+        stored === "collapsed" || stored === "expanded"
+          ? stored
+          : matchMedia("(max-width: 860px)").matches
+            ? "collapsed"
+            : "expanded"
+    </script>
+  </head>
+  <body>
+    <div class="app">
+      <Sidebar />
+      <main>
+        <Billing client:load />
+      </main>
+    </div>
+  </body>
+</html>
+
+<style>
+  .app {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+  @media (max-width: 1100px) {
+    .app {
+      height: auto;
+      min-height: 100vh;
+      overflow: visible;
+    }
+  }
+  @media (max-width: 860px) {
+    main {
+      margin-left: 68px;
+    }
+  }
+</style>

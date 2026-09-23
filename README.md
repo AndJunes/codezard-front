@@ -148,8 +148,8 @@ Neither console switch is set in that compose, so the console is off there.
 | `npm run dev` | Dev server on `http://localhost:4321`. Reads `.env` |
 | `npm run build` | Production build into `dist/` |
 | `npm run preview` | Serves the build: `node ./dist/server/entry.mjs`. **Does not read `.env`** — see below |
-| `npm test` | `vitest run`. There are no test files yet, so it exits with code 1 ("No test files found") |
-| `npm run check` | `astro check`. Needs `@astrojs/check`, which is not in `devDependencies` yet |
+| `npm test` | `vitest run`. 51 tests over the billing client, the session store, the formatters and the run client's error mapping |
+| `npm run check` | `astro check` |
 
 **`preview` and the environment.** The built server only reads real environment variables, so
 `GATEWAY_URL` from `.env` is ignored and the fallback `http://gateway:8000` is used. Export it,
@@ -180,21 +180,46 @@ always wins over the file.
 
 ```
 browser ──► Astro (SSR, public)
-              └─► gateway :8000     /runs/*        (internal network)
-                    └─► agent manager :8100
-                          ├─ /pm       analyze · plan · revise
-                          └─ /backend  chat
+              ├─► gateway :8000     /runs/*        (internal network)
+              │     └─► agent manager :8100
+              │           ├─ /pm       analyze · plan · revise
+              │           └─ /backend  chat
+              └─► gateway :8000     /billing/*     (internal network)
 ```
 
-Astro is the only piece facing the internet. `src/pages/api/run/[...path].ts` forwards
-`/api/run/*` to the gateway's `/runs/*` and decides nothing: the gateway's address is internal
-and its agent tokens are secrets, and neither may reach a browser. That is the whole reason this
-app needs a server at all, and why `output` is `server` rather than `static`.
+Astro is the only piece facing the internet. `src/pages/api/run/[...path].ts` and
+`src/pages/api/billing/[...path].ts` forward to the gateway and decide nothing: the gateway's
+address is internal and its agent tokens are secrets, and neither may reach a browser. That is
+the whole reason this app needs a server at all, and why `output` is `server` rather than
+`static`.
 
 The gateway's routes are `POST /runs`, `GET /runs/{id}`, `POST /runs/{id}/answers`,
 `/rejection`, `/approval`, `/generation` (SSE), `GET /runs/{id}/events` (SSE),
 `POST /runs/{id}/console` (SSE) and `GET /runs/{id}/download` (the ZIP). Their contract lives in
 `CodeZard`.
+
+## Créditos (`/billing`)
+
+Only visible when the gateway is selling: with `GATEWAY_BILLING__ENABLED=false` the routes are
+not registered, the page says so, and `POST /runs` charges nobody.
+
+**No secret key ever enters this page.** An account is a Stellar address, and signing in means
+the wallet extension signs a challenge and hands back a signature. `src/lib/billing/wallet.ts`
+feature-detects Freighter rather than bundling a wallet SDK — a dependency on one wallet would
+pin it as *the* wallet — and a browser without one gets an honest "there is none". What is
+stored in `localStorage` is a token the *gateway* minted, which proves an address and expires
+in hours; losing it costs a sign-in.
+
+**The screen never computes a balance.** It renders the one the gateway sends, which is the
+sum of an append-only ledger. A number added up here would be a second opinion about
+somebody's money, right until the day it is not.
+
+**A 402 is not an error.** The gateway asking to be paid arrives as a `RunError` with
+`needsPayment` set and the protocol's own document attached, so the chat shows the price and a
+way to `/billing` instead of a red box saying `HTTP 402`. The proxies forward `Authorization`,
+`X-Payment` and `X-Payment-Response` untouched, because x402 is end-to-end between the paying
+client and the gateway — a proxy that dropped either would break it while looking like it
+worked.
 
 ## The two things worth knowing before changing anything
 
@@ -210,8 +235,12 @@ is refused with `409`. "The button was not rendered" is not a rule: anyone can P
 
 | Path | What lives there |
 |---|---|
-| `src/pages/api/run/[...path].ts` | The only server route: a pipe to the gateway. Streams SSE, the ZIP and console output untouched |
+| `src/pages/api/run/[...path].ts` | A pipe to the gateway. Streams SSE, the ZIP and console output untouched, and carries the session and payment headers |
+| `src/pages/api/billing/[...path].ts` | The same pipe for `/billing/*`. Decides nothing about money |
 | `src/lib/flow/run.ts` | The run as the screen sees it: calls to the gateway, nothing decided here |
+| `src/lib/billing/{client,session,wallet}.ts` | The gateway's billing API, the session token, and the wallet — which is feature-detected, never bundled |
+| `src/lib/billing/format.ts` | Token counts and amounts as a person reads them. Tested, because they are about money |
+| `src/components/islands/Billing.svelte` | `/billing`: balance, plans, packs, the invoice to pay and the ledger |
 | `src/lib/plan/schema.ts` | **The plan.** The contract between the PM and the backend |
 | `src/lib/agents/events.ts` | The backend agent's SSE contract, as types, and the readers for it |
 | `src/lib/chat/messages.ts` | The transcript: everything said so far, in order |
