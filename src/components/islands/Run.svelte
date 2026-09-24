@@ -6,6 +6,7 @@
   import type { Run, RunState } from "../../lib/flow/run"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
+  import { readable } from "../../lib/ui/problem"
   import * as history from "../../lib/project/history"
   import { messageId, type Message } from "../../lib/chat/messages"
   import type { Answer, Plan, Questionnaire } from "../../lib/plan/schema"
@@ -90,11 +91,24 @@
     const stored = Number(getComputedStyle(root).getPropertyValue("--chat-w").replace("px", ""))
     if (Number.isFinite(stored) && stored >= MIN_CHAT) chatWidth = stored
 
+    // What the sidebar asked for from another page. It cannot dispatch an event there —
+    // this island is the only listener and it does not exist outside the home page — so the
+    // intent arrives in the URL. Read once and wiped from the address bar, so a reload or a
+    // shared link does not silently reopen somebody else's project.
+    const asked = new URLSearchParams(location.search)
+    const wanted = asked.get("open") ?? ""
+    const fresh = asked.has("new")
+    if (wanted || fresh) {
+      history.replaceState(null, "", location.pathname)
+    }
+
     let previous = ""
     try {
       previous = localStorage.getItem(STORED_RUN) ?? ""
     } catch {}
-    if (previous) void load(previous)
+    if (wanted) void load(wanted, true)
+    else if (fresh) restart()
+    else if (previous) void load(previous)
 
     // The sidebar is plain HTML with no access to this state, so it asks by event. Both are
     // refused while a request is in flight: this island holds ONE run's worth of state, and
@@ -400,8 +414,29 @@
     }
   }
 
+  /**
+   * An error becomes a turn in the conversation. A 402 becomes a different one.
+   *
+   * The gateway asking to be paid is not a failure, and showing it in the same red box as
+   * "the agent returned nothing" tells the person they broke something when what they need
+   * is a price and a link. The quote comes from the 402 itself, so the number on screen is
+   * the number the server would charge rather than one repeated here.
+   */
   function fail(error: unknown) {
-    const text = error instanceof run.RunError ? error.message : String(error)
+    if (error instanceof run.RunError && error.needsPayment) {
+      const offer = error.payment?.accepts?.[0]
+      say({
+        id: messageId(),
+        from: "agent",
+        kind: "paywall",
+        text: error.message,
+        price: offer ? `${offer.maxAmountRequired} ${offer.asset}` : "",
+      })
+      return
+    }
+    // `describe` and not `String`: anything can be thrown, and `String` renders a plain
+    // object as the literal words "[object Object]".
+    const text = error instanceof run.RunError ? error.message : readable(error)
     say({ id: messageId(), from: "agent", kind: "error", text })
   }
 
@@ -688,6 +723,17 @@
                 <p class="dim">Los {message.project.totals.files} archivos están a la derecha. El ZIP se baja desde ahí.</p>
                 <button class="btn" onclick={restart}>Empezar otro</button>
               </div>
+            {:else if message.kind === "paywall"}
+              <!-- Deliberately not red and deliberately not `role="alert"`: nothing failed,
+                   and interrupting a screen reader to announce a price is the wrong urgency.
+                   What it needs is the amount and the way out. -->
+              <div class="paywall">
+                <p>{message.text}</p>
+                {#if message.price}
+                  <p class="dim">Un run cuesta <b>{message.price}</b> al precio de ahora.</p>
+                {/if}
+                <a class="btn btn--primary" href="/billing">Ver planes y saldo</a>
+              </div>
             {:else}
               <p class="error" role="alert">{message.text}</p>
             {/if}
@@ -857,6 +903,21 @@
      width available to the one side that has paragraphs, lists and a plan to show. */
   .said { margin: 0; white-space: pre-wrap; line-height: 1.6; }
   .error { color: var(--bad); margin: 0; }
+
+  /* The accent, not `--bad`. Being asked to pay is an ordinary state of a paid product; the
+     red box is for the agent having failed. */
+  .paywall {
+    border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  .paywall p { margin: 0; }
+  .paywall a { text-decoration: none; }
 
   /* Three dots and nothing else: there is no partial answer to show while the PM is mid
      -request, only that it is working — the same thing "Trabajando" says in words for the
