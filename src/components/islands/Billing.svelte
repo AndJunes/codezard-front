@@ -5,6 +5,7 @@
   import { load, shorten } from "../../lib/billing/session"
   import type { Account, Catalogue, Invoice, Product, Session } from "../../lib/billing/types"
   import * as wallet from "../../lib/billing/wallet"
+  import { cancelled, readable } from "../../lib/ui/problem"
 
   /**
    * The billing screen: what you have, what you have spent, and how to get more.
@@ -41,10 +42,25 @@
   let poller: ReturnType<typeof setInterval> | undefined
   const POLL_MS = 5_000
 
+  /**
+   * Mount: read the stored session, fetch the catalogue, and fetch the account if signed in.
+   *
+   * NOTHING IN HERE MAY READ STATE IT ALSO WRITES. An `$effect` re-runs whenever reactive
+   * state it read during its own run changes, so `session = load()` followed by `if (session)`
+   * is a loop: `load()` returns a freshly parsed object every call, never `===` the last one,
+   * so the write always counts as a change and the effect wakes itself up forever. Signed out
+   * it looked fine — `null === null`, no change — and the moment anybody signed in the page
+   * started refetching `/billing` and `/billing/plans` several times a second, for as long as
+   * it stayed open.
+   *
+   * Hence the local `current`: the effect reads no reactive state at all, which is what makes
+   * it run once. The same trap is waiting for any read added here later.
+   */
   $effect(() => {
-    session = load()
+    const current = load()
+    session = current
     void refreshCatalogue()
-    if (session) void refreshAccount().catch(report)
+    if (current) void refreshAccount().catch(report)
     return () => clearInterval(poller)
   })
 
@@ -55,7 +71,15 @@
       offline = raised.message
       return
     }
-    error = raised instanceof Error ? raised.message : String(raised)
+    if (raised instanceof wallet.WalletCancelled || cancelled(raised)) {
+      // They closed the wallet picker, or refused to sign. Nothing happened and nothing is
+      // wrong; a red box here would tell somebody off for changing their mind.
+      notice = raised instanceof Error ? raised.message : ""
+      return
+    }
+    // `readable` and not `String`: browser wallets throw plain objects, and `String` turns
+    // every one of them into the literal words "[object Object]".
+    error = readable(raised)
   }
 
   /**
@@ -65,6 +89,7 @@
   async function attempt(what: string, action: () => Promise<void>): Promise<void> {
     busy = what
     error = ""
+    notice = ""
     try {
       await action()
     } catch (raised) {

@@ -2,10 +2,10 @@
  * Signing in, through Stellar Wallets Kit.
  *
  * THE RULE THIS FILE EXISTS TO KEEP: the secret key never enters this page. The kit talks to
- * whichever wallet the person picked — Freighter, xBull, Albedo, Lobstr, Rabet, Hana, a
- * Ledger — and each of those holds the key, shows the person what they are about to sign, and
- * hands back a signature. Nothing here can read a seed, and nothing here should ever ask for
- * one: a field that accepts a secret key is a field that ends up in a screenshot.
+ * whichever wallet the person picked — Freighter, xBull, LOBSTR, Hana — and each of those
+ * holds the key, shows the person what they are about to sign, and hands back a signature.
+ * Nothing here can read a seed, and nothing here should ever ask for one: a field that
+ * accepts a secret key is a field that ends up in a screenshot.
  *
  * WHY THE KIT AND NOT ONE WALLET
  *     The first version of this feature-detected Freighter on `window`. That works and it
@@ -26,6 +26,47 @@
  *     wallet is broken" rather than as a mismatch.
  */
 
+import { cancelled, readable } from "../ui/problem"
+
+/**
+ * The wallets on offer, imported one by one rather than through `defaultModules()`.
+ *
+ * `defaultModules()` looks like the obvious call and is the wrong one here. It CONSTRUCTS
+ * every module before returning them, so its `filterBy` cannot prevent a constructor from
+ * doing anything — and one of them does. MetaMask's module (`@metamask/connect-stellar`)
+ * reaches for a Snap session as soon as it is built; on a browser without MetaMask that
+ * request does not fail, it TIMES OUT ("Failed to restore Stellar MetaMask session:
+ * Transport request timed out"), and the picker never opens. Measured in a real browser:
+ * clicking "Entrar con mi billetera" did nothing at all, with no error to show for it.
+ *
+ * Importing each module also keeps the whole MetaMask package out of the bundle, which is
+ * the second reason to do it this way.
+ *
+ * WHICH WALLETS, AND WHY NOT ALL OF THEM
+ *     Signing in here means signing a message. Albedo and Rabet declare `signMessage` and
+ *     then refuse it outright ("Albedo does not support the signMessage function"), so
+ *     listing them offers a door that is painted on: the person picks their own wallet and
+ *     is told it cannot do the one thing being asked. They are left out until sign-in has a
+ *     path that does not need a signed message.
+ *
+ * Adding one is a line here, and the cost of getting it wrong is somebody unable to sign in,
+ * so they are named rather than collected.
+ */
+async function wallets() {
+  const [freighter, xbull, lobstr, hana] = await Promise.all([
+    import("@creit.tech/stellar-wallets-kit/modules/freighter"),
+    import("@creit.tech/stellar-wallets-kit/modules/xbull"),
+    import("@creit.tech/stellar-wallets-kit/modules/lobstr"),
+    import("@creit.tech/stellar-wallets-kit/modules/hana"),
+  ])
+  return [
+    new freighter.FreighterModule(),
+    new xbull.xBullModule(),
+    new lobstr.LobstrModule(),
+    new hana.HanaModule(),
+  ]
+}
+
 /** What the gateway calls its network, and what the kit calls the same thing. */
 const PASSPHRASES: Record<string, string> = {
   "stellar-testnet": "Test SDF Network ; September 2015",
@@ -33,6 +74,14 @@ const PASSPHRASES: Record<string, string> = {
 }
 
 export class WalletError extends Error {}
+
+/**
+ * The person closed the picker, or refused to sign.
+ *
+ * Its own type because the screen's answer is nothing at all: showing a red box to somebody
+ * who deliberately clicked away tells them they broke something they chose not to do.
+ */
+export class WalletCancelled extends WalletError {}
 
 let started: string | null = null
 
@@ -54,14 +103,17 @@ async function load(network: string): Promise<Kit> {
   }
 
   const { StellarWalletsKit, Networks } = await import("@creit.tech/stellar-wallets-kit")
-  const { defaultModules } = await import("@creit.tech/stellar-wallets-kit/modules/utils")
   const target = passphrase as (typeof Networks)[keyof typeof Networks]
 
   if (started === null) {
-    // `defaultModules()` is every wallet that needs no extra configuration. WalletConnect is
-    // deliberately not among them: it wants a project id, and a sign-in button that fails
-    // for want of one is worse than one wallet fewer.
-    StellarWalletsKit.init({ modules: defaultModules(), network: target })
+    // The kit defaults to a light picker, which lands as a white sheet over a dark page and
+    // reads as somebody else's dialog rather than part of this one.
+    const { SwkAppDarkTheme } = await import("@creit.tech/stellar-wallets-kit/types")
+    StellarWalletsKit.init({
+      modules: await wallets(),
+      network: target,
+      theme: SwkAppDarkTheme,
+    })
     started = network
   } else if (started !== network) {
     StellarWalletsKit.setNetwork(target)
@@ -79,9 +131,19 @@ async function load(network: string): Promise<Kit> {
  */
 export async function connect(network: string): Promise<string> {
   const kit = await load(network)
-  const { address } = await kit.authModal()
+  let address: string | undefined
+  try {
+    ;({ address } = await kit.authModal())
+  } catch (raised) {
+    // Closing the picker is not a failure. The kit rejects with the same `code: -1` it uses
+    // for real problems, so the phrasing is what tells them apart — see `ui/problem.ts`.
+    if (cancelled(raised)) throw new WalletCancelled("Cancelaste la conexión.")
+    throw new WalletError(readable(raised))
+  }
   if (!address) {
-    throw new WalletError("The wallet did not hand over an address. Is it unlocked?")
+    throw new WalletError(
+      "La billetera no devolvió ninguna dirección. ¿Está desbloqueada?",
+    )
   }
   return address
 }
@@ -103,7 +165,8 @@ export async function sign(network: string, address: string, message: string): P
       networkPassphrase: PASSPHRASES[network],
     })
   } catch (raised) {
-    throw new WalletError(reason(raised))
+    if (cancelled(raised)) throw new WalletCancelled("No firmaste el mensaje.")
+    throw new WalletError(readable(raised))
   }
   const value = signed?.signedMessage
   if (typeof value === "string" && value) return value
@@ -133,7 +196,8 @@ export async function signTransaction(
       networkPassphrase: PASSPHRASES[network],
     })
   } catch (raised) {
-    throw new WalletError(reason(raised))
+    if (cancelled(raised)) throw new WalletCancelled("No firmaste la transacción.")
+    throw new WalletError(readable(raised))
   }
   if (!signed?.signedTxXdr) {
     throw new WalletError("The wallet returned no signed transaction.")
@@ -151,13 +215,6 @@ export async function disconnect(): Promise<void> {
     // Nothing to disconnect, or a wallet that does not implement it. Either way the page is
     // already treating the person as signed out.
   }
-}
-
-/** The kit reports errors as `{ code, message }`; everything else is whatever was thrown. */
-function reason(raised: unknown): string {
-  const error = raised as { message?: string } | null
-  if (error && typeof error.message === "string" && error.message) return error.message
-  return String(raised)
 }
 
 export function base64(bytes: Uint8Array): string {

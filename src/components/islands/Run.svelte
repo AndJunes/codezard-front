@@ -6,6 +6,7 @@
   import type { Run, RunState } from "../../lib/flow/run"
   import { readEvents, isDone, type AgentEvent, type Project } from "../../lib/agents/events"
   import { badgeForProject } from "../../lib/ui/status"
+  import { readable } from "../../lib/ui/problem"
   import * as history from "../../lib/project/history"
   import { messageId, type Message } from "../../lib/chat/messages"
   import type { Answer, Plan, Questionnaire } from "../../lib/plan/schema"
@@ -433,7 +434,9 @@
       })
       return
     }
-    const text = error instanceof run.RunError ? error.message : String(error)
+    // `describe` and not `String`: anything can be thrown, and `String` renders a plain
+    // object as the literal words "[object Object]".
+    const text = error instanceof run.RunError ? error.message : readable(error)
     say({ id: messageId(), from: "agent", kind: "error", text })
   }
 

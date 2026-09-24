@@ -14,6 +14,25 @@ const TESTNET = "Test SDF Network ; September 2015"
 const PUBLIC = "Public Global Stellar Network ; September 2015"
 const ADDRESS = "G" + "A".repeat(55)
 
+/**
+ * The wallet modules the page offers, and why they are mocked one by one.
+ *
+ * `wallet.ts` imports each module's own entrypoint rather than calling `defaultModules()`,
+ * because that helper CONSTRUCTS every module it knows — including MetaMask's, which reaches
+ * for a Snap session on construction and logs a transport timeout in any browser without it.
+ * The cost of importing them by name is this list: a module added there must be added here,
+ * or its real dependencies load in Node and fail (`@stellar/freighter-api` is CommonJS).
+ *
+ * Albedo and Rabet are absent on purpose. Both declare `signMessage` and then refuse it, and
+ * signing in here is signing a message, so offering them is offering a dead end.
+ */
+const WALLETS: ReadonlyArray<readonly [string, string]> = [
+  ["@creit.tech/stellar-wallets-kit/modules/freighter", "FreighterModule"],
+  ["@creit.tech/stellar-wallets-kit/modules/xbull", "xBullModule"],
+  ["@creit.tech/stellar-wallets-kit/modules/lobstr", "LobstrModule"],
+  ["@creit.tech/stellar-wallets-kit/modules/hana", "HanaModule"],
+]
+
 function fakeKit(overrides: Record<string, unknown> = {}) {
   const calls: { init?: unknown; network?: unknown; sign?: unknown } = {}
   const kit = {
@@ -31,9 +50,9 @@ function fakeKit(overrides: Record<string, unknown> = {}) {
     StellarWalletsKit: kit,
     Networks: { TESTNET, PUBLIC },
   }))
-  vi.doMock("@creit.tech/stellar-wallets-kit/modules/utils", () => ({
-    defaultModules: () => [{ productId: "freighter" }],
-  }))
+  for (const [path, name] of WALLETS) {
+    vi.doMock(path, () => ({ [name]: class {} }))
+  }
   return { kit, calls }
 }
 
@@ -55,7 +74,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.resetModules()
   vi.doUnmock("@creit.tech/stellar-wallets-kit")
-  vi.doUnmock("@creit.tech/stellar-wallets-kit/modules/utils")
+  for (const [path] of WALLETS) vi.doUnmock(path)
 })
 
 describe("connecting", () => {
@@ -73,6 +92,21 @@ describe("connecting", () => {
     await wallet.connect("stellar")
 
     expect((calls.init as { network: string }).network).toBe(PUBLIC)
+  })
+
+  it("offers the wallets it names, and nothing it did not", async () => {
+    // The guard against going back to `defaultModules()`. That helper builds all fifteen
+    // modules it knows before any filter runs, so `filterBy` cannot stop one from doing
+    // something on construction — and MetaMask's does: it reaches for a Snap session and
+    // logs a transport timeout in every browser without MetaMask installed. Counting the
+    // modules is the cheapest thing that notices the day someone swaps the list back.
+    const { calls } = fakeKit()
+    const wallet = await fresh()
+
+    await wallet.connect("stellar-testnet")
+
+    const { modules } = calls.init as { modules: unknown[] }
+    expect(modules).toHaveLength(WALLETS.length)
   })
 
   it("only initialises once, and switches network afterwards", async () => {
@@ -100,7 +134,55 @@ describe("connecting", () => {
     fakeKit({ authModal: vi.fn(async () => ({ address: "" })) })
     const wallet = await fresh()
 
-    await expect(wallet.connect("stellar-testnet")).rejects.toThrow(/unlocked/)
+    await expect(wallet.connect("stellar-testnet")).rejects.toThrow(/desbloqueada/)
+  })
+
+  it("never lets a plain object reach the screen as [object Object]", async () => {
+    // THE bug: the kit rejects with `{ code, message }`, which is not an `Error`, so the
+    // screen's `String(raised)` rendered it as the literal words "object Object".
+    fakeKit({
+      authModal: vi.fn(async () => {
+        throw { code: -3, message: "Please set the wallet first" }
+      }),
+    })
+    const wallet = await fresh()
+
+    // `connect` resolves to a string, so the union needs narrowing before `.message`.
+    const raised = await wallet
+      .connect("stellar-testnet")
+      .then(() => null)
+      .catch((error: Error) => error)
+    expect(raised).toBeInstanceOf(Error)
+    expect(raised?.message).toBe("Please set the wallet first")
+    expect(raised?.message).not.toContain("object Object")
+  })
+
+  it("reads an extension's error out of the kit's wrapper", async () => {
+    fakeKit({
+      authModal: vi.fn(async () => {
+        throw { error: { code: -4, message: "La billetera está bloqueada" } }
+      }),
+    })
+    const wallet = await fresh()
+
+    await expect(wallet.connect("stellar-testnet")).rejects.toThrow(/bloqueada/)
+  })
+
+  it("closing the picker is a cancellation, not a failure", async () => {
+    // The kit rejects with this when the modal is dismissed. A red box here would tell
+    // somebody off for changing their mind.
+    fakeKit({
+      authModal: vi.fn(async () => {
+        throw { code: -1, message: "The user closed the modal." }
+      }),
+    })
+    const wallet = await fresh()
+
+    const raised = await wallet
+      .connect("stellar-testnet")
+      .then(() => null)
+      .catch((error: Error) => error)
+    expect(raised?.constructor.name).toBe("WalletCancelled")
   })
 })
 
@@ -136,7 +218,7 @@ describe("signing", () => {
     await expect(wallet.sign("stellar-testnet", ADDRESS, "m")).rejects.toThrow(/another one/)
   })
 
-  it("carries the wallet's own refusal instead of a stack trace", async () => {
+  it("refusing to sign is a cancellation", async () => {
     fakeKit({
       signMessage: vi.fn(async () => {
         throw { code: 4, message: "The user rejected this request" }
@@ -144,7 +226,22 @@ describe("signing", () => {
     })
     const wallet = await fresh()
 
-    await expect(wallet.sign("stellar-testnet", ADDRESS, "m")).rejects.toThrow(/rejected/)
+    const raised = await wallet
+      .sign("stellar-testnet", ADDRESS, "m")
+      .then(() => null)
+      .catch((error: Error) => error)
+    expect(raised?.constructor.name).toBe("WalletCancelled")
+  })
+
+  it("a real failure carries the wallet's own words", async () => {
+    fakeKit({
+      signMessage: vi.fn(async () => {
+        throw { code: -2, message: "El dispositivo no responde" }
+      }),
+    })
+    const wallet = await fresh()
+
+    await expect(wallet.sign("stellar-testnet", ADDRESS, "m")).rejects.toThrow(/no responde/)
   })
 })
 
