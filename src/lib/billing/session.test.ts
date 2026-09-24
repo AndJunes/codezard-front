@@ -54,6 +54,19 @@ describe("loading a session", () => {
     expect(load(NOW)).toEqual(ALIVE)
   })
 
+  it("is a NEW object every call, which is a trap worth knowing about", () => {
+    // It parses JSON, so two calls are equal but never the same object. Harmless on its own,
+    // and the reason a billing screen once refetched itself several times a second: an
+    // `$effect` that did `session = load()` and then read `session` saw a fresh object every
+    // run, counted it as a change, and woke itself up forever. Anything assigning this into
+    // reactive state must not also read that state in the same effect.
+    save(ALIVE)
+    const first = load(NOW)
+    const second = load(NOW)
+    expect(first).toEqual(second)
+    expect(first).not.toBe(second)
+  })
+
   it("is nothing when none was saved", () => {
     expect(load(NOW)).toBeNull()
   })
