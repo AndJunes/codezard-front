@@ -112,6 +112,35 @@ export async function sign(network: string, address: string, message: string): P
   throw new WalletError("This wallet cannot sign a message. Try another one.")
 }
 
+/**
+ * Sign a transaction the GATEWAY built, and hand the signed XDR back.
+ *
+ * The browser never assembles a Soroban invocation. Doing that means simulating it first to
+ * learn its resource footprint, and shipping that machinery here would be a second
+ * implementation of something the gateway already has. So the gateway says what the
+ * transaction is, the wallet says who agrees to it, and neither can do the other's half.
+ */
+export async function signTransaction(
+  network: string,
+  address: string,
+  xdr: string,
+): Promise<string> {
+  const kit = await load(network)
+  let signed: { signedTxXdr?: string }
+  try {
+    signed = await kit.signTransaction(xdr, {
+      address,
+      networkPassphrase: PASSPHRASES[network],
+    })
+  } catch (raised) {
+    throw new WalletError(reason(raised))
+  }
+  if (!signed?.signedTxXdr) {
+    throw new WalletError("The wallet returned no signed transaction.")
+  }
+  return signed.signedTxXdr
+}
+
 /** Let the wallet go. The session token is dropped separately: they are different things. */
 export async function disconnect(): Promise<void> {
   if (started === null) return

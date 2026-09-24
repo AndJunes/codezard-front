@@ -156,10 +156,42 @@ const here = Astro.url.pathname
     if (matchMedia("(max-width: 860px)").matches) setSidebar("collapsed")
   }
 
+  /**
+   * The sidebar is on every page; the thing that answers it is not.
+   *
+   * "Nuevo proyecto" and opening a saved one are dispatched as events (`cz:new`, `cz:open`)
+   * and the ONLY listener is the Run island, which lives on the home page. On `/billing`
+   * those clicks used to do nothing at all — no error, no navigation, a dead button. So off
+   * the home page the intent travels in the URL instead, and the island picks it up there.
+   */
+  const HOME = "/"
+  const atHome = () => location.pathname === HOME || location.pathname === "/index.html"
+
+  function ask(kind: "new" | "open", id = "") {
+    if (atHome()) {
+      window.dispatchEvent(
+        kind === "new" ? new CustomEvent("cz:new") : new CustomEvent("cz:open", { detail: id }),
+      )
+      closeIfFloating()
+      return
+    }
+    location.assign(kind === "new" ? `${HOME}?new=1` : `${HOME}?open=${encodeURIComponent(id)}`)
+  }
+
   // ── projects ───────────────────────────────────────────────────────────────────────────
   // The island owns the run and knows nothing of this list, and this list has no access to
   // the run. They talk by two events out (`cz:new`, `cz:open`) and two attributes in
   // (`data-run`, `data-busy`), which is all either needs to know about the other.
+
+  /**
+   * `data-run` and `data-busy` are set by the island, which only exists on the home page.
+   * Left over from a previous page they would grey out every project here and keep one
+   * marked as open — so off the home page they are cleared before the first render.
+   */
+  if (!atHome()) {
+    delete root.dataset.run
+    delete root.dataset.busy
+  }
 
   const isBusy = () => root.dataset.busy === "yes"
   const BUSY_TITLE = "Esperá a que termine lo que está en curso"
@@ -238,9 +270,8 @@ const here = Astro.url.pathname
     const removeId = target.closest<HTMLElement>("[data-remove]")?.dataset.remove
     if (openId) {
       if (isBusy() && openId !== root.dataset.run) return
-      if (openId === root.dataset.run) return closeIfFloating()
-      window.dispatchEvent(new CustomEvent("cz:open", { detail: openId }))
-      closeIfFloating()
+      if (openId === root.dataset.run && atHome()) return closeIfFloating()
+      ask("open", openId)
     } else if (removeId) {
       const openNow = removeId === root.dataset.run
       if (openNow && isBusy()) return
@@ -253,8 +284,7 @@ const here = Astro.url.pathname
 
   newButton?.addEventListener("click", () => {
     if (isBusy()) return
-    window.dispatchEvent(new CustomEvent("cz:new"))
-    closeIfFloating()
+    ask("new")
   })
 
   // Re-render on anything that could change what the list says: a save in this tab or
@@ -270,6 +300,7 @@ const here = Astro.url.pathname
     ;(first ?? byId("projects-heading"))?.focus()
     byId("projects-heading")?.scrollIntoView({ block: "nearest" })
   })
+
 
   // ── theme ──────────────────────────────────────────────────────────────────────────────
   type Preference = "dark" | "light" | "system"

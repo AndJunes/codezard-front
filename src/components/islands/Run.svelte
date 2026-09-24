@@ -90,11 +90,24 @@
     const stored = Number(getComputedStyle(root).getPropertyValue("--chat-w").replace("px", ""))
     if (Number.isFinite(stored) && stored >= MIN_CHAT) chatWidth = stored
 
+    // What the sidebar asked for from another page. It cannot dispatch an event there —
+    // this island is the only listener and it does not exist outside the home page — so the
+    // intent arrives in the URL. Read once and wiped from the address bar, so a reload or a
+    // shared link does not silently reopen somebody else's project.
+    const asked = new URLSearchParams(location.search)
+    const wanted = asked.get("open") ?? ""
+    const fresh = asked.has("new")
+    if (wanted || fresh) {
+      history.replaceState(null, "", location.pathname)
+    }
+
     let previous = ""
     try {
       previous = localStorage.getItem(STORED_RUN) ?? ""
     } catch {}
-    if (previous) void load(previous)
+    if (wanted) void load(wanted, true)
+    else if (fresh) restart()
+    else if (previous) void load(previous)
 
     // The sidebar is plain HTML with no access to this state, so it asks by event. Both are
     // refused while a request is in flight: this island holds ONE run's worth of state, and

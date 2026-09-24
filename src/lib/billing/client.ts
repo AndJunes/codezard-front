@@ -19,6 +19,8 @@ import type {
   Invoice,
   PaymentRequired,
   Session,
+  Subscribed,
+  SubscribeQuote,
 } from "./types"
 
 /** The gateway's own message, not a generic one. */
@@ -140,6 +142,19 @@ export function signOut(): void {
 export const account = () => call<Account>("")
 
 // ── buying ───────────────────────────────────────────────────────────────────
+
+/**
+ * The unsigned transaction that subscribes this account to a plan.
+ *
+ * Nothing is signed and nothing is charged by asking: the payment comes out of the
+ * subscriber's own account, so only their key can authorise it.
+ */
+export const subscription = (sku: string) =>
+  call<SubscribeQuote>("/subscribe", "POST", { sku })
+
+/** Send it once the wallet has signed. The account is settled against the chain first. */
+export const submitSubscription = (xdr: string) =>
+  call<Subscribed>("/subscribe/submit", "POST", { xdr })
 
 /** Create an invoice. Its amount is frozen the moment it is created. */
 export const checkout = (sku: string, asset = "") =>

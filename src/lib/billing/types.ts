@@ -45,12 +45,24 @@ export interface Catalogue {
   /** Tokens an account must hold before a run may start. */
   reserve: number
   /**
+   * The Soroban contract a paid plan is subscribed to. `""` means this deployment has none,
+   * and then only the free plan and the token packs are on offer.
+   */
+  contract: string
+  /**
    * Which Stellar the gateway is on: `"stellar-testnet"` or `"stellar"`.
    *
    * The browser needs it to tell the wallet which network to sign for. Guessing it produces
    * signatures that verify nowhere, and the failure reads as a broken wallet.
    */
   network: string
+  /**
+   * The address payments are made to. Public, and shown before any checkout: a page that can
+   * only reveal it inside an invoice cannot answer "where do I send this".
+   *
+   * `""` means this deployment is not selling anything yet — the free plan still works.
+   */
+  destination: string
 }
 
 export interface Balance {
@@ -108,6 +120,20 @@ export interface Account {
   /** Everything, ever. The comparison that makes the first number mean something. */
   lifetime: Usage
   entries: LedgerEntry[]
+}
+
+/** What the gateway hands over for a plan: a transaction to sign, and what it will do. */
+export interface SubscribeQuote {
+  plan: Product
+  contract: string
+  network: string
+  /** Unsigned, prepared, and good for five minutes. */
+  xdr: string
+}
+
+export interface Subscribed {
+  transaction: string
+  subscription: Subscription | null
 }
 
 export interface Invoice {

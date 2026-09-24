@@ -123,12 +123,57 @@
 
   // ── buying ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Buy, or do the thing that has to happen first.
+   *
+   * A disabled button with no explanation is the complaint this answers: without a session
+   * these used to be greyed out and clicking them did nothing, with nothing on screen saying
+   * that signing in was the missing step. Now the first click opens the wallet, and the
+   * second one buys.
+   */
   function buy(product: Product): Promise<void> {
+    if (!session) return connect()
+    if (product.kind === "plan") return subscribe(product)
     return attempt(product.id, async () => {
       invoice = await api.checkout(product.id)
       notice = ""
       watch(invoice.id)
     })
+  }
+
+  /**
+   * Subscribing is a contract call, not an invoice.
+   *
+   * The gateway builds the transaction, the wallet signs it, the gateway submits it — and
+   * the payment and the subscription happen in that one transaction, so they cannot come
+   * apart. There is no memo to get right and no poller to wait for: by the time this returns
+   * the chain has it and the account has been settled against it.
+   */
+  function subscribe(product: Product): Promise<void> {
+    return attempt(product.id, async () => {
+      const current = session
+      if (!current || !catalogue) throw new BillingError("Entrá con tu billetera primero.")
+      const quote = await api.subscription(product.id)
+      notice = "Confirmá la suscripción en tu billetera…"
+      const signed = await wallet.signTransaction(quote.network, current.address, quote.xdr)
+      notice = "Enviando a la red…"
+      const done = await api.submitSubscription(signed)
+      notice = `Suscripción activa. Transacción ${done.transaction.slice(0, 10)}…`
+      await refreshAccount()
+    })
+  }
+
+  function labelFor(product: Product): string {
+    const plan = product.kind === "plan"
+    if (busy === product.id) return plan ? "Firmá en tu billetera…" : "Generando factura…"
+    if (!session) return "Entrar para comprar"
+    if (plan) return contract ? "Suscribirme" : "No disponible todavía"
+    return selling ? "Comprar" : "No disponible todavía"
+  }
+
+  /** A plan needs the contract; a pack needs somewhere to send the money. Different things. */
+  function offered(product: Product): boolean {
+    return product.kind === "plan" ? Boolean(contract) : selling
   }
 
   /**
@@ -175,6 +220,10 @@
   }
 
   const asset = $derived(catalogue?.asset ?? "XLM")
+  const destination = $derived(catalogue?.destination ?? "")
+  const contract = $derived(catalogue?.contract ?? "")
+  /** Nothing can be bought until there is somewhere to send the money. */
+  const selling = $derived(Boolean(destination))
   const balance = $derived(account?.balance ?? null)
   const usage = $derived(account?.usage ?? null)
   const plan = $derived(account?.plan ?? null)
@@ -371,6 +420,37 @@
       </article>
     {/if}
 
+    {#if catalogue}
+      <article class="card deposit">
+        <div class="deposit__text">
+          <h2>Dónde depositar</h2>
+          {#if selling}
+            <p class="sub">
+              Esta es la dirección que recibe los pagos, en {asset} sobre {catalogue.network ===
+              "stellar-testnet"
+                ? "Stellar testnet"
+                : "Stellar"}. Cada compra genera una factura con su <b>memo</b>: sin el memo el
+              pago llega pero no hay forma de saber de quién es.
+            </p>
+          {:else}
+            <p class="sub">
+              Este gateway todavía no tiene dirección de cobro, así que no se puede comprar
+              nada. El plan Free funciona igual. Se configura con
+              <code>GATEWAY_BILLING__DESTINATION</code> en <code>CodeZard/.env</code>.
+            </p>
+          {/if}
+        </div>
+        {#if selling}
+          <div class="deposit__address">
+            <code class="wrap">{destination}</code>
+            <button class="copy" onclick={() => copy(destination, "deposit")}>
+              {copied === "deposit" ? "copiado" : "copiar"}
+            </button>
+          </div>
+        {/if}
+      </article>
+    {/if}
+
     {#if free}
       <article class="card freecard">
         <div>
@@ -386,6 +466,15 @@
     {/if}
 
     <h2 class="section">Planes</h2>
+    {#if contract}
+      <p class="sub">
+        Las suscripciones son un contrato en Stellar: el pago y el período quedan registrados
+        en la misma transacción, así que no pueden quedar desfasados. Podés verificarlo vos
+        mismo sin preguntarnos nada.
+        <a class="link" href="https://stellar.expert/explorer/testnet/contract/{contract}"
+           target="_blank" rel="noopener noreferrer">Ver el contrato</a>
+      </p>
+    {/if}
     <div class="grid">
       {#each paid as product (product.id)}
         <article class="card product">
@@ -400,9 +489,9 @@
           <button
             class="btn btn--primary"
             onclick={() => buy(product)}
-            disabled={!session || busy === product.id}
+            disabled={busy === product.id || (!!session && !offered(product))}
           >
-            {busy === product.id ? "Generando factura…" : "Suscribirme"}
+            {labelFor(product)}
           </button>
         </article>
       {/each}
@@ -420,9 +509,9 @@
           <button
             class="btn"
             onclick={() => buy(product)}
-            disabled={!session || busy === product.id}
+            disabled={busy === product.id || (!!session && !offered(product))}
           >
-            {busy === product.id ? "Generando factura…" : "Comprar"}
+            {labelFor(product)}
           </button>
         </article>
       {/each}
@@ -468,6 +557,8 @@
 </section>
 
 <style>
+  /* No `overflow` here: the page's `main` is the scroll container, so the scrollbar lands
+     at the window edge instead of down the side of this centred box. */
   .billing {
     max-width: 1000px;
     margin: 0 auto;
@@ -475,7 +566,6 @@
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
-    overflow-y: auto;
     width: 100%;
   }
 
@@ -588,6 +678,32 @@
   /* Spent, not broken: the loudest colour this product has for "look at this". */
   .bar span.bar__full {
     background: var(--pending);
+  }
+
+  .deposit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .deposit h2 {
+    margin: 0 0 0.2rem;
+    font-size: 1.05rem;
+  }
+  .deposit__text {
+    flex: 1 1 22rem;
+  }
+  .deposit__address {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .link {
+    color: var(--accent);
   }
 
   .freecard {

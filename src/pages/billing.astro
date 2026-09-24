@@ -69,10 +69,20 @@ export const prerender = false
     height: 100vh;
     overflow: hidden;
   }
+  /*
+   * `main` is the scroll container, and that is the fix rather than a detail.
+   *
+   * The billing section is a 1000px box centred with `margin: 0 auto`, and it used to own
+   * the scrollbar itself — so on a wide screen the bar sat at the right edge of that box,
+   * floating in the middle of the page with empty space beside it, and on a narrow one it
+   * ended up jammed against the sidebar. Scrolling the region instead puts the bar where
+   * every other page in this app puts it: at the edge of the window.
+   */
   main {
     flex: 1;
     min-width: 0;
-    display: flex;
+    display: block;
+    overflow-y: auto;
   }
   @media (max-width: 1100px) {
     .app {
