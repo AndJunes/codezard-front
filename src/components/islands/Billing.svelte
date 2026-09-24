@@ -1,13 +1,13 @@
 <script lang="ts">
   import * as api from "../../lib/billing/client"
-  import { BillingError } from "../../lib/billing/client"
+  import { BillingError, BillingOffError } from "../../lib/billing/client"
   import * as fmt from "../../lib/billing/format"
   import { load, shorten } from "../../lib/billing/session"
   import type { Account, Catalogue, Invoice, Product, Session } from "../../lib/billing/types"
-  import { detect, type Wallet } from "../../lib/billing/wallet"
+  import * as wallet from "../../lib/billing/wallet"
 
   /**
-   * The billing screen: what you have, what it costs, and how to pay for more.
+   * The billing screen: what you have, what you have spent, and how to get more.
    *
    * THREE THINGS IT REFUSES TO DO
    *
@@ -15,12 +15,10 @@
    * and a number added up here would be a second opinion about somebody's money — right
    * until the day it is not.
    *
-   * It never asks for a secret key. Signing happens inside the wallet extension; this page
-   * sees a public address and a signature. A field that takes a seed is a field that ends up
-   * in a screenshot.
+   * It never asks for a secret key. Signing happens inside whichever wallet the person
+   * picked; this page sees a public address and a signature.
    *
-   * It never decides that an invoice is paid. It asks, repeatedly, and shows the answer. The
-   * only thing that can settle an invoice is a payment on the ledger.
+   * It never decides that an invoice is paid. It asks, repeatedly, and shows the answer.
    *
    * WHY IT POLLS
    *
@@ -33,10 +31,10 @@
   let catalogue = $state<Catalogue | null>(null)
   let account = $state<Account | null>(null)
   let invoice = $state<Invoice | null>(null)
-  let wallet = $state<Wallet | null>(null)
 
   let busy = $state("")
   let error = $state("")
+  let offline = $state("")
   let notice = $state("")
   let copied = $state("")
 
@@ -46,14 +44,23 @@
   $effect(() => {
     session = load()
     void refreshCatalogue()
-    void detect().then((found) => (wallet = found))
-    if (session) void refreshAccount()
+    if (session) void refreshAccount().catch(report)
     return () => clearInterval(poller)
   })
 
+  function report(raised: unknown): void {
+    if (raised instanceof BillingOffError) {
+      // Not a failure and not the person's doing: this deployment sells nothing. It gets its
+      // own panel rather than the red box, which would say they broke something.
+      offline = raised.message
+      return
+    }
+    error = raised instanceof Error ? raised.message : String(raised)
+  }
+
   /**
-   * The screen only ever shows one failure at a time, and it is always the latest thing the
-   * person did. Stacking them would leave a stale message under a fresh one.
+   * The screen shows one failure at a time, and it is always the latest thing the person
+   * did. Stacking them leaves a stale message under a fresh one.
    */
   async function attempt(what: string, action: () => Promise<void>): Promise<void> {
     busy = what
@@ -61,10 +68,7 @@
     try {
       await action()
     } catch (raised) {
-      error =
-        raised instanceof BillingError || raised instanceof Error
-          ? raised.message
-          : String(raised)
+      report(raised)
     } finally {
       busy = ""
     }
@@ -73,10 +77,9 @@
   async function refreshCatalogue(): Promise<void> {
     try {
       catalogue = await api.catalogue()
+      offline = ""
     } catch (raised) {
-      // The price list is public, so a failure here means the gateway is down or is not
-      // selling anything — worth saying plainly rather than rendering an empty page.
-      error = raised instanceof Error ? raised.message : String(raised)
+      report(raised)
     }
   }
 
@@ -93,27 +96,24 @@
 
   function connect(): Promise<void> {
     return attempt("connect", async () => {
-      const found = wallet ?? (await detect())
-      wallet = found
-      if (!found) {
-        throw new BillingError(
-          "No se detectó ninguna billetera Stellar en este navegador. Instalá Freighter " +
-            "para entrar con tu cuenta.",
-        )
+      if (!catalogue) {
+        throw new BillingError("Todavía no pude leer la lista de planes. Probá de nuevo.")
       }
-      const address = await found.address()
+      // The gateway's network, never a guess: a signature made for the wrong Stellar
+      // verifies nowhere, and the failure reads as a broken wallet.
+      const network = catalogue.network
+      const address = await wallet.connect(network)
       const issued = await api.challenge(address)
-      const signature = await found.sign(issued.message, address)
+      const signature = await wallet.sign(network, address, issued.message)
       session = await api.verify(issued.challenge, signature)
-      notice = `Entraste como ${shorten(session.address)}`
+      notice = `Entraste como ${shorten(session.address)}. Ya tenés el plan Free activo.`
       await refreshAccount()
     })
   }
 
   function signOut(): void {
-    // One call, through the client: it is the only thing that talks to the session store,
-    // and two places clearing it is two places to forget one of the other bits of state.
     api.signOut()
+    void wallet.disconnect()
     session = null
     account = null
     invoice = null
@@ -174,10 +174,23 @@
     }
   }
 
-  const products = $derived([...(catalogue?.plans ?? []), ...(catalogue?.packs ?? [])])
   const asset = $derived(catalogue?.asset ?? "XLM")
   const balance = $derived(account?.balance ?? null)
+  const usage = $derived(account?.usage ?? null)
+  const plan = $derived(account?.plan ?? null)
+  const free = $derived(catalogue?.plans.find((p) => p.free) ?? null)
+  const paid = $derived(catalogue?.plans.filter((p) => !p.free) ?? [])
   const expiresIn = $derived(invoice ? fmt.remaining(invoice.expires_at) : "")
+
+  /**
+   * How much of THIS period's grant is gone, as a percentage.
+   *
+   * Against the grant and not against the total: purchased tokens do not belong to a week,
+   * so counting them would make a bar that never fills and says nothing.
+   */
+  const spent = $derived(
+    usage && plan?.tokens ? Math.min(100, Math.round((usage.tokens / plan.tokens) * 100)) : 0,
+  )
 </script>
 
 <section class="billing">
@@ -195,208 +208,263 @@
         <span class="badge badge--good" title={session.address}>{shorten(session.address)}</span>
         <button class="btn" onclick={signOut}>Salir</button>
       </div>
-    {:else}
+    {:else if !offline}
       <button class="btn btn--primary" onclick={connect} disabled={busy === "connect"}>
         {busy === "connect" ? "Conectando…" : "Entrar con mi billetera"}
       </button>
     {/if}
   </header>
 
-  {#if error}
-    <p class="msg msg--bad" role="alert">{error}</p>
-  {/if}
-  {#if notice}
-    <p class="msg msg--good">{notice}</p>
-  {/if}
+  {#if offline}
+    <!-- Not an error: this gateway simply is not selling anything. Saying so calmly, with
+         what to change, beats a red box repeating a status code. -->
+    <div class="card off">
+      <h2>El cobro está apagado en este gateway</h2>
+      <p>{offline}</p>
+    </div>
+  {:else}
+    {#if error}
+      <p class="msg msg--bad" role="alert">{error}</p>
+    {/if}
+    {#if notice}
+      <p class="msg msg--good">{notice}</p>
+    {/if}
 
-  {#if session && balance}
-    <div class="cards">
-      <article class="card stat">
-        <h2>Saldo</h2>
-        <p class="big">{fmt.tokens(balance.total)}</p>
-        <p class="exact">{fmt.exact(balance.total)} tokens</p>
-        {#if balance.granted > 0}
-          <p class="split">
-            {fmt.tokens(balance.granted)} del plan · {fmt.tokens(balance.purchased)} comprados
-          </p>
-        {/if}
-      </article>
+    {#if session && balance && usage}
+      <div class="cards">
+        <article class="card stat">
+          <h2>Saldo</h2>
+          <p class="big">{fmt.tokens(balance.total)}</p>
+          <p class="exact">{fmt.exact(balance.total)} tokens</p>
+          {#if balance.granted > 0 && balance.purchased > 0}
+            <p class="split">
+              {fmt.tokens(balance.granted)} del plan · {fmt.tokens(balance.purchased)} comprados
+            </p>
+          {/if}
+        </article>
 
-      <article class="card stat">
-        <h2>Plan</h2>
-        {#if account?.subscription && account.subscription.status === "active"}
-          <p class="big">{account.plan?.name ?? account.subscription.plan}</p>
-          <p class="exact">Renueva el {fmt.when(account.subscription.renews_at)}</p>
-        {:else if account?.subscription}
-          <p class="big">Vencido</p>
+        <article class="card stat">
+          <h2>Consumo {plan?.free ? "de esta semana" : "de este período"}</h2>
+          <p class="big">{fmt.tokens(usage.tokens)}</p>
           <p class="exact">
-            El período terminó el {fmt.when(account.subscription.renews_at)}. Los tokens del
-            plan no se acumulan; los comprados sí.
+            {usage.runs}
+            {usage.runs === 1 ? "run" : "runs"}
+            {#if usage.since}· desde el {fmt.when(usage.since)}{/if}
+          </p>
+          {#if plan?.tokens}
+            <!-- Against the grant, not the total: purchased tokens do not belong to a week. -->
+            <div
+              class="bar"
+              role="progressbar"
+              aria-valuenow={spent}
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-label="Parte del plan consumida"
+            >
+              <span style="width: {spent}%" class:bar__full={spent >= 100}></span>
+            </div>
+            <p class="split">{spent}% de {fmt.tokens(plan.tokens)} incluidos</p>
+          {/if}
+          {#if account && account.lifetime.runs !== usage.runs}
+            <p class="split">
+              En total: {account.lifetime.runs} runs, {fmt.tokens(account.lifetime.tokens)}
+            </p>
+          {/if}
+        </article>
+
+        <article class="card stat">
+          <h2>Plan</h2>
+          {#if account?.subscription?.status === "active"}
+            <p class="big">{plan?.name ?? account.subscription.plan}</p>
+            <p class="exact">
+              {plan?.free ? "Se renueva solo el" : "Renueva el"}
+              {fmt.when(account.subscription.renews_at)}
+            </p>
+            {#if plan?.free}
+              <p class="split">
+                Los tokens del plan no se acumulan: cada semana arranca de nuevo. Los que
+                compres aparte sí quedan.
+              </p>
+            {/if}
+          {:else if account?.subscription}
+            <p class="big">Vencido</p>
+            <p class="exact">
+              El período terminó el {fmt.when(account.subscription.renews_at)}. Los tokens del
+              plan no se acumulan; los comprados sí.
+            </p>
+          {:else}
+            <p class="big dim">Sin plan</p>
+          {/if}
+        </article>
+      </div>
+    {/if}
+
+    {#if invoice}
+      <article class="card invoice">
+        <header>
+          <h2>Pagá esta factura</h2>
+          <span
+            class="badge badge--{invoice.status === 'paid'
+              ? 'good'
+              : invoice.status === 'pending'
+                ? 'pending'
+                : 'bad'}"
+          >
+            {invoice.status === "paid"
+              ? "Acreditada"
+              : invoice.status === "pending"
+                ? "Esperando el pago"
+                : "Vencida"}
+          </span>
+        </header>
+
+        {#if invoice.status === "pending"}
+          <p class="sub">
+            Enviá el importe exacto <b>con el memo</b>. Sin el memo no hay forma de saber que el
+            pago es tuyo, y queda sin acreditar.
+            {#if expiresIn}La cotización vale {expiresIn} más.{/if}
+          </p>
+
+          <dl class="fields">
+            <div>
+              <dt>Importe</dt>
+              <dd>
+                <code>{fmt.asset(invoice.amount, invoice.asset)}</code>
+                <button class="copy" onclick={() => copy(invoice!.amount, "amount")}>
+                  {copied === "amount" ? "copiado" : "copiar"}
+                </button>
+              </dd>
+            </div>
+            <div>
+              <dt>Dirección</dt>
+              <dd>
+                <code class="wrap">{invoice.destination}</code>
+                <button class="copy" onclick={() => copy(invoice!.destination, "dest")}>
+                  {copied === "dest" ? "copiado" : "copiar"}
+                </button>
+              </dd>
+            </div>
+            <div>
+              <dt>Memo (texto)</dt>
+              <dd>
+                <code>{invoice.memo}</code>
+                <button class="copy" onclick={() => copy(invoice!.memo, "memo")}>
+                  {copied === "memo" ? "copiado" : "copiar"}
+                </button>
+              </dd>
+            </div>
+          </dl>
+          <p class="poll pulse">Revisando la red cada {POLL_MS / 1000} s…</p>
+        {:else if invoice.status === "paid"}
+          <p class="sub">
+            Acreditados {fmt.exact(invoice.tokens)} tokens.
+            {#if invoice.tx_hash}<code class="wrap">{invoice.tx_hash}</code>{/if}
           </p>
         {:else}
-          <p class="big dim">Sin plan</p>
-          <p class="exact">Podés usar packs de tokens sin suscribirte.</p>
+          <p class="sub">
+            Esta cotización venció sin pago. Generá otra: el precio se vuelve a calcular con la
+            cotización del momento.
+          </p>
+        {/if}
+
+        <button class="btn" onclick={dismiss}>Cerrar</button>
+      </article>
+    {/if}
+
+    {#if free}
+      <article class="card freecard">
+        <div>
+          <h2>{free.name} · {fmt.tokens(free.tokens)} tokens por semana</h2>
+          <p class="sub">{free.description}</p>
+        </div>
+        {#if session}
+          <span class="badge badge--good">Activo</span>
+        {:else}
+          <span class="badge badge--neutral">Entrá y ya lo tenés</span>
         {/if}
       </article>
+    {/if}
 
-      {#if catalogue}
-        <article class="card stat">
-          <h2>Para arrancar un run</h2>
-          <p class="big">{fmt.tokens(catalogue.reserve)}</p>
-          <p class="exact">
-            Es un piso, no un depósito: no se descuenta. Sirve para decirte que no alcanza
-            antes de empezar, y no a mitad de una generación.
+    <h2 class="section">Planes</h2>
+    <div class="grid">
+      {#each paid as product (product.id)}
+        <article class="card product">
+          <h3>{product.name}</h3>
+          <p class="price">
+            {fmt.usd(product.price)}<span class="per"
+              >/{product.period_days === 7 ? "semana" : "mes"}</span
+            >
           </p>
+          <p class="tokens">{fmt.tokens(product.tokens)} tokens por período</p>
+          <p class="desc">{product.description}</p>
+          <button
+            class="btn btn--primary"
+            onclick={() => buy(product)}
+            disabled={!session || busy === product.id}
+          >
+            {busy === product.id ? "Generando factura…" : "Suscribirme"}
+          </button>
         </article>
-      {/if}
+      {/each}
     </div>
-  {/if}
 
-  {#if invoice}
-    <article class="card invoice">
-      <header>
-        <h2>Pagá esta factura</h2>
-        <span
-          class="badge badge--{invoice.status === 'paid'
-            ? 'good'
-            : invoice.status === 'pending'
-              ? 'pending'
-              : 'bad'}"
-        >
-          {invoice.status === "paid"
-            ? "Acreditada"
-            : invoice.status === "pending"
-              ? "Esperando el pago"
-              : "Vencida"}
-        </span>
-      </header>
+    <h2 class="section">Packs de tokens</h2>
+    <p class="sub">Se compran una vez y no vencen. Sirven solos o encima de un plan.</p>
+    <div class="grid">
+      {#each catalogue?.packs ?? [] as product (product.id)}
+        <article class="card product">
+          <h3>{product.name}</h3>
+          <p class="price">{fmt.usd(product.price)}</p>
+          <p class="tokens">{fmt.tokens(product.tokens)} tokens</p>
+          <p class="desc">{product.description}</p>
+          <button
+            class="btn"
+            onclick={() => buy(product)}
+            disabled={!session || busy === product.id}
+          >
+            {busy === product.id ? "Generando factura…" : "Comprar"}
+          </button>
+        </article>
+      {/each}
+    </div>
 
-      {#if invoice.status === "pending"}
-        <p class="sub">
-          Enviá el importe exacto <b>con el memo</b>. Sin el memo no hay forma de saber que el
-          pago es tuyo, y queda sin acreditar.
-          {#if expiresIn}La cotización vale {expiresIn} más.{/if}
-        </p>
+    {#if !session && catalogue}
+      <p class="sub">
+        Entrá con tu billetera Stellar para activar el plan Free y para comprar. La misma
+        dirección que paga es la cuenta: no hay contraseña que recordar ni que nos puedan robar.
+      </p>
+    {/if}
 
-        <dl class="fields">
-          <div>
-            <dt>Importe</dt>
-            <dd>
-              <code>{fmt.asset(invoice.amount, invoice.asset)}</code>
-              <button class="copy" onclick={() => copy(invoice!.amount, "amount")}>
-                {copied === "amount" ? "copiado" : "copiar"}
-              </button>
-            </dd>
-          </div>
-          <div>
-            <dt>Dirección</dt>
-            <dd>
-              <code class="wrap">{invoice.destination}</code>
-              <button class="copy" onclick={() => copy(invoice!.destination, "dest")}>
-                {copied === "dest" ? "copiado" : "copiar"}
-              </button>
-            </dd>
-          </div>
-          <div>
-            <dt>Memo (texto)</dt>
-            <dd>
-              <code>{invoice.memo}</code>
-              <button class="copy" onclick={() => copy(invoice!.memo, "memo")}>
-                {copied === "memo" ? "copiado" : "copiar"}
-              </button>
-            </dd>
-          </div>
-        </dl>
-        <p class="poll pulse">Revisando la red cada {POLL_MS / 1000} s…</p>
-      {:else if invoice.status === "paid"}
-        <p class="sub">
-          Acreditados {fmt.exact(invoice.tokens)} tokens.
-          {#if invoice.tx_hash}<code class="wrap">{invoice.tx_hash}</code>{/if}
-        </p>
-      {:else}
-        <p class="sub">
-          Esta cotización venció sin pago. Generá otra: el precio se vuelve a calcular con la
-          cotización del momento.
-        </p>
-      {/if}
+    {#if account?.entries.length}
+      <h2 class="section">Movimientos</h2>
+      <table class="ledger">
+        <thead>
+          <tr><th>Cuándo</th><th>Qué</th><th class="num">Tokens</th><th>Detalle</th></tr>
+        </thead>
+        <tbody>
+          {#each [...account.entries].reverse() as entry (entry.id)}
+            <tr>
+              <td class="dim">{fmt.when(entry.at)}</td>
+              <td><span class="badge badge--{fmt.tone(entry)}">{fmt.label(entry.kind)}</span></td>
+              <td class="num">{fmt.delta(entry.tokens)}</td>
+              <td class="dim">{entry.memo}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <p class="sub">
+        El saldo es la suma de estas filas y nada más. Si algún número no cierra, la cuenta está
+        acá entera.
+      </p>
+    {/if}
 
-      <button class="btn" onclick={dismiss}>Cerrar</button>
-    </article>
-  {/if}
-
-  <h2 class="section">Planes</h2>
-  <div class="grid">
-    {#each catalogue?.plans ?? [] as product (product.id)}
-      <article class="card product">
-        <h3>{product.name}</h3>
-        <p class="price">{fmt.usd(product.price)}<span class="per">/mes</span></p>
-        <p class="tokens">{fmt.tokens(product.tokens)} tokens por período</p>
-        <p class="desc">{product.description}</p>
-        <button
-          class="btn btn--primary"
-          onclick={() => buy(product)}
-          disabled={!session || busy === product.id}
-        >
-          {busy === product.id ? "Generando factura…" : "Suscribirme"}
-        </button>
-      </article>
-    {/each}
-  </div>
-
-  <h2 class="section">Packs de tokens</h2>
-  <p class="sub">Se compran una vez y no vencen. Sirven solos o encima de un plan.</p>
-  <div class="grid">
-    {#each catalogue?.packs ?? [] as product (product.id)}
-      <article class="card product">
-        <h3>{product.name}</h3>
-        <p class="price">{fmt.usd(product.price)}</p>
-        <p class="tokens">{fmt.tokens(product.tokens)} tokens</p>
-        <p class="desc">{product.description}</p>
-        <button
-          class="btn"
-          onclick={() => buy(product)}
-          disabled={!session || busy === product.id}
-        >
-          {busy === product.id ? "Generando factura…" : "Comprar"}
-        </button>
-      </article>
-    {/each}
-  </div>
-
-  {#if !session && products.length}
-    <p class="sub">
-      Entrá con tu billetera Stellar para comprar. La misma dirección que paga es la cuenta:
-      no hay contraseña que recordar ni que nos puedan robar.
+    <p class="sub foot">
+      Los pagos se liquidan en la red Stellar ({asset}{catalogue?.network === "stellar-testnet"
+        ? ", testnet"
+        : ""}). Las cotizaciones se congelan al crear la factura, así que el importe que ves es
+      el que se paga.
     </p>
   {/if}
-
-  {#if account?.entries.length}
-    <h2 class="section">Movimientos</h2>
-    <table class="ledger">
-      <thead>
-        <tr><th>Cuándo</th><th>Qué</th><th class="num">Tokens</th><th>Detalle</th></tr>
-      </thead>
-      <tbody>
-        {#each [...account.entries].reverse() as entry (entry.id)}
-          <tr>
-            <td class="dim">{fmt.when(entry.at)}</td>
-            <td><span class="badge badge--{fmt.tone(entry)}">{fmt.label(entry.kind)}</span></td>
-            <td class="num">{fmt.delta(entry.tokens)}</td>
-            <td class="dim">{entry.memo}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-    <p class="sub">
-      El saldo es la suma de estas filas y nada más. Si algún número no cierra, la cuenta está
-      acá entera.
-    </p>
-  {/if}
-
-  <p class="sub foot">
-    Los pagos se liquidan en la red Stellar ({asset}). Las cotizaciones se congelan al crear
-    la factura, así que el importe que ves es el que se paga.
-  </p>
 </section>
 
 <style>
@@ -455,6 +523,17 @@
     border-color: color-mix(in oklab, var(--good) 35%, transparent);
   }
 
+  /* Neutral, not red: nothing failed and nobody did anything wrong. */
+  .off h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1.05rem;
+  }
+  .off p {
+    margin: 0;
+    color: var(--text-dim);
+    max-width: 70ch;
+  }
+
   .cards,
   .grid {
     display: grid;
@@ -491,6 +570,38 @@
     margin: 0.25rem 0 0;
     font-size: 0.84rem;
     color: var(--text-dim);
+  }
+
+  .bar {
+    margin-top: 0.6rem;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 999px;
+  }
+  /* Spent, not broken: the loudest colour this product has for "look at this". */
+  .bar span.bar__full {
+    background: var(--pending);
+  }
+
+  .freecard {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    border-color: color-mix(in oklab, var(--accent) 35%, var(--line));
+    background: color-mix(in oklab, var(--accent) 6%, var(--surface));
+  }
+  .freecard h2 {
+    margin: 0;
+    font-size: 1.05rem;
   }
 
   .section {

@@ -148,7 +148,7 @@ Neither console switch is set in that compose, so the console is off there.
 | `npm run dev` | Dev server on `http://localhost:4321`. Reads `.env` |
 | `npm run build` | Production build into `dist/` |
 | `npm run preview` | Serves the build: `node ./dist/server/entry.mjs`. **Does not read `.env`** — see below |
-| `npm test` | `vitest run`. 51 tests over the billing client, the session store, the formatters and the run client's error mapping |
+| `npm test` | `vitest run`. 64 tests over the billing client, the session store, the wallet layer, the formatters and the run client's error mapping |
 | `npm run check` | `astro check` |
 
 **`preview` and the environment.** The built server only reads real environment variables, so
@@ -203,12 +203,22 @@ The gateway's routes are `POST /runs`, `GET /runs/{id}`, `POST /runs/{id}/answer
 Only visible when the gateway is selling: with `GATEWAY_BILLING__ENABLED=false` the routes are
 not registered, the page says so, and `POST /runs` charges nobody.
 
+**Every account starts on the free plan.** US$ 5 of tokens a week, granted the moment the
+account is first seen and renewing itself — nothing to buy, nothing to accept. The screen
+shows what is left of it and what has been spent against it.
+
 **No secret key ever enters this page.** An account is a Stellar address, and signing in means
-the wallet extension signs a challenge and hands back a signature. `src/lib/billing/wallet.ts`
-feature-detects Freighter rather than bundling a wallet SDK — a dependency on one wallet would
-pin it as *the* wallet — and a browser without one gets an honest "there is none". What is
-stored in `localStorage` is a token the *gateway* minted, which proves an address and expires
-in hours; losing it costs a sign-in.
+a wallet signs a challenge and hands back a signature. `src/lib/billing/wallet.ts` goes
+through [Stellar Wallets Kit](https://github.com/Creit-Tech/Stellar-Wallets-Kit), so Freighter,
+xBull, Albedo, Lobstr, Rabet, Hana and a Ledger all work and "which wallet" stops being a
+decision this code makes for somebody else. The kit is imported **lazily**, for two reasons
+that both matter: it registers custom elements and reaches for `window` at import time, so a
+top-level import would crash server-side rendering, and it is a large dependency nobody needs
+until they click. The network it signs for comes from `/billing/plans` — a signature made for
+the wrong Stellar verifies nowhere, and the failure reads as a broken wallet.
+
+What is stored in `localStorage` is a token the *gateway* minted, which proves an address and
+expires in hours; losing it costs a sign-in.
 
 **The screen never computes a balance.** It renders the one the gateway sends, which is the
 sum of an append-only ledger. A number added up here would be a second opinion about
@@ -238,7 +248,7 @@ is refused with `409`. "The button was not rendered" is not a rule: anyone can P
 | `src/pages/api/run/[...path].ts` | A pipe to the gateway. Streams SSE, the ZIP and console output untouched, and carries the session and payment headers |
 | `src/pages/api/billing/[...path].ts` | The same pipe for `/billing/*`. Decides nothing about money |
 | `src/lib/flow/run.ts` | The run as the screen sees it: calls to the gateway, nothing decided here |
-| `src/lib/billing/{client,session,wallet}.ts` | The gateway's billing API, the session token, and the wallet — which is feature-detected, never bundled |
+| `src/lib/billing/{client,session,wallet}.ts` | The gateway's billing API, the session token, and the wallet — Stellar Wallets Kit, imported lazily so SSR never touches it |
 | `src/lib/billing/format.ts` | Token counts and amounts as a person reads them. Tested, because they are about money |
 | `src/components/islands/Billing.svelte` | `/billing`: balance, plans, packs, the invoice to pay and the ledger |
 | `src/lib/plan/schema.ts` | **The plan.** The contract between the PM and the backend |

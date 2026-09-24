@@ -23,6 +23,10 @@ export interface Product {
   description: string
   /** Plans only. */
   cadence?: string
+  /** Plans only: how long one grant lasts. 7 for the free plan, 30 for the paid ones. */
+  period_days?: number
+  /** Plans only: granted rather than sold, and it renews itself. */
+  free?: boolean
   overage?: boolean
 }
 
@@ -40,6 +44,13 @@ export interface Catalogue {
   asset: string
   /** Tokens an account must hold before a run may start. */
   reserve: number
+  /**
+   * Which Stellar the gateway is on: `"stellar-testnet"` or `"stellar"`.
+   *
+   * The browser needs it to tell the wallet which network to sign for. Guessing it produces
+   * signatures that verify nowhere, and the failure reads as a broken wallet.
+   */
+  network: string
 }
 
 export interface Balance {
@@ -78,11 +89,24 @@ export interface LedgerEntry {
   memo: string
 }
 
+/** What has been spent, and on how many runs. Derived from the ledger, never a counter. */
+export interface Usage {
+  tokens: number
+  runs: number
+  cost: Money
+  /** The start of the window. `null` means "everything". */
+  since: string | null
+}
+
 export interface Account {
   account: string
   balance: Balance
   subscription: Subscription | null
   plan: Product | null
+  /** This period only, which is the window the balance is about. */
+  usage: Usage
+  /** Everything, ever. The comparison that makes the first number mean something. */
+  lifetime: Usage
   entries: LedgerEntry[]
 }
 

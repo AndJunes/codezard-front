@@ -65,12 +65,38 @@ async function call<T>(path: string, method = "GET", body?: unknown): Promise<T>
     // signed-in one that fails every request.
     clear()
   }
+  if (response.status === 404 && !(payload as { error?: unknown })?.error) {
+    // Not "no such invoice" — that comes back with an error body. A bare 404 from the whole
+    // /billing tree means the gateway never registered those routes, which happens for
+    // exactly one reason: it is not selling anything. Saying "HTTP 404" to somebody looking
+    // at a credits page tells them nothing; this says what to change.
+    throw new BillingOffError()
+  }
   const error = (payload as { error?: { message?: string; code?: string } })?.error
   throw new BillingError(
     error?.message ?? `HTTP ${response.status}`,
     error?.code ?? "",
     response.status,
   )
+}
+
+/**
+ * The gateway is not selling anything, so there is nothing here to show.
+ *
+ * Its own type because the screen's answer is different: not "try again", but "this
+ * deployment has billing switched off", which is a sentence about configuration and not
+ * about anything the person did.
+ */
+export class BillingOffError extends BillingError {
+  constructor() {
+    super(
+      "Este gateway no tiene el cobro activado, así que no hay créditos que mostrar. " +
+        "Se enciende con GATEWAY_BILLING__ENABLED=true y GATEWAY_BILLING__SECRET en " +
+        "CodeZard/.env; mientras tanto los runs no se cobran.",
+      "billing_off",
+      404,
+    )
+  }
 }
 
 /** Is this body a 402 document, or something else that happened to arrive with that status? */

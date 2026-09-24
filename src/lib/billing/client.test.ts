@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   BillingError,
+  BillingOffError,
   PaymentRequiredError,
   account,
   catalogue,
@@ -145,6 +146,29 @@ describe("a 402", () => {
     expect(isPaymentRequired({ error: "no" })).toBe(false)
     expect(isPaymentRequired(null)).toBe(false)
     expect(isPaymentRequired("402")).toBe(false)
+  })
+})
+
+describe("a bare 404 from the whole billing tree", () => {
+  it("is read as 'this gateway is not selling anything'", async () => {
+    // The routes are only registered when billing is on. Telling somebody looking at a
+    // credits page "HTTP 404" says nothing about what to change.
+    answering(404, {})
+
+    const raised = await catalogue().catch((error: BillingError) => error)
+
+    expect(raised).toBeInstanceOf(BillingOffError)
+    expect((raised as BillingError).code).toBe("billing_off")
+    expect((raised as BillingError).message).toContain("GATEWAY_BILLING__ENABLED")
+  })
+
+  it("is NOT confused with a missing invoice, which has an error body", async () => {
+    answering(404, { error: { code: "invoice_not_found", message: "no existe" } })
+
+    const raised = await catalogue().catch((error: BillingError) => error)
+
+    expect(raised).not.toBeInstanceOf(BillingOffError)
+    expect((raised as BillingError).message).toBe("no existe")
   })
 })
 
